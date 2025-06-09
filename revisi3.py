@@ -42,31 +42,6 @@ def extract_table_from_pdf(file):
                     all_dataframes.append(df)
     return pd.concat(all_dataframes, ignore_index=True) if all_dataframes else pd.DataFrame()
 
-def reverse_text(text):
-    if not isinstance(text, str):
-        return text
-    text = text.replace('\n', ' ')
-    return text[::-1].strip()
-
-def hapus_footer(df):
-    keywords = ["keputusan", "keterangan", "approved", "checked", "disetujui", "diperiksa", "dibuat", "nama", "tanggal", "ttd"]
-    
-    footer_start_idx = None
-    for idx in df.index:
-        row = df.loc[idx]
-        row_str = ' '.join([str(x).lower() for x in row if pd.notnull(x)])
-        if any(k in row_str for k in keywords):
-            footer_start_idx = idx
-            break
-
-    if footer_start_idx is not None:
-        df = df.loc[:footer_start_idx-1].copy()
-        st.info(f"🧹 Footer terdeteksi mulai dari baris index {footer_start_idx}, dihapus semua baris footer.")
-    else:
-        st.info("✅ Tidak ditemukan footer untuk dihapus.")
-    
-    return df
-
 def bersihkan_dataframe(df):
     try:
         df[0] = df[0].astype(str).str.replace(r'^(\d+)\s*(\w*)\.*', r'\1\2', regex=True)
@@ -74,21 +49,6 @@ def bersihkan_dataframe(df):
     except Exception as e:
         st.warning(f"Gagal membersihkan kolom: {e}")
     df.dropna(how='all', inplace=True)
-
-    cols_lower = {col.lower().strip(): col for col in df.columns}
-
-    if "patrol" in cols_lower and "setup" in cols_lower:
-        col_patrol = cols_lower["patrol"]
-        col_setup = cols_lower["setup"]
-
-        temp = df[col_patrol].copy()
-        df[col_patrol] = df[col_setup]
-        df[col_setup] = temp
-
-        df[col_patrol] = df[col_patrol].apply(reverse_text)
-        df[col_setup] = df[col_setup].apply(reverse_text)
-
-    df = hapus_footer(df)
     return df
 
 def convert_df_to_excel(df):
@@ -101,26 +61,27 @@ def convert_df_to_excel(df):
 # Streamlit UI
 st.title("CHECK SHEET SCAN QFROM")
 
-uploaded_file = st.file_uploader("📤 Upload file PDF", type="pdf")
+uploaded_file = st.file_uploader("Upload file PDF", type="pdf")
 
 if uploaded_file is not None:
     try:
         df = extract_table_from_pdf(uploaded_file)
-
         if df.empty:
-            st.warning("❌ Tidak ditemukan tabel di PDF")
+            st.warning("❌ Tidak ditemukan tabel di PDF.")
         else:
+            st.subheader("📄 Tabel Mentah")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
             df_clean = bersihkan_dataframe(df.copy())
-            
             st.subheader("🧼 Tabel Setelah Dibersihkan")
             st.dataframe(df_clean, use_container_width=True, hide_index=True)
 
-            excel_data = convert_df_to_excel(df_clean)
-            st.download_button(
-                label="💾 Download Excel",
-                data=excel_data,
-                file_name="output.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        excel_data = convert_df_to_excel(df_clean)
+        st.download_button(
+            label="💾 Download Excel",
+            data=excel_data,
+            file_name="output.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     except Exception as e:
         st.error(f"Gagal memproses file: {e}")
