@@ -118,6 +118,31 @@ def detect_and_fix_reversed_columns(df):
     df.columns = new_columns
     return df
 
+def reverse_text(text):
+    if not isinstance(text, str):
+        return text
+    text = text.replace('\n', ' ')
+    return text[::-1].strip()
+
+def hapus_footer(df):
+    keywords = ["keputusan", "keterangan", "approved", "checked", "disetujui", "diperiksa", "dibuat", "nama", "tanggal", "ttd"]
+    
+    footer_start_idx = None
+    for idx in df.index:
+        row = df.loc[idx]
+        row_str = ' '.join([str(x).lower() for x in row if pd.notnull(x)])
+        if any(k in row_str for k in keywords):
+            footer_start_idx = idx
+            break
+
+    if footer_start_idx is not None:
+        df = df.loc[:footer_start_idx-1].copy()
+        st.info(f"🧹 Footer terdeteksi mulai dari baris index {footer_start_idx}, dihapus semua baris footer.")
+    else:
+        st.info("✅ Tidak ditemukan footer untuk dihapus.")
+    
+    return df
+
 def bersihkan_dataframe(df):
     df = detect_and_fix_reversed_columns(df)
 
@@ -144,7 +169,6 @@ def bersihkan_dataframe(df):
         df[col_setup] = df[col_setup].apply(reverse_text)
 
     df = hapus_footer(df)
-
     return df
 
 def convert_df_to_excel(df):
