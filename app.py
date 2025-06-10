@@ -3,44 +3,40 @@ import pdfplumber
 import pandas as pd
 from io import BytesIO
 
-def extract_table_from_pdf(file):
-    all_dataframes = []
-    with pdfplumber.open(file) as pdf:
-        for page_num, page in enumerate(pdf.pages):
-            tables = page.extract_tables()
-            for table_idx, table in enumerate(tables):
-                if table:
-                    header_row_idx = None
-                    for idx, row in enumerate(table):
-                        if row and "No." in row and "Item" in row:
-                            header_row_idx = idx
-                            break
-                if header_row_idx is not None:
-                    data = table[header_row_idx:]
-                    header = data[0]
-                    header = [str(h) if h is not None else "" for h in header]
+# ---------- Helpers ----------
 
-                    seen = {}
-                    new_header = []
-                    for col in header:
-                        if col in seen:
-                            seen[col] += 1
-                            new_header.append(f"{col}_{seen[col]}")
-                        else:
-                            seen[col] = 0
-                            new_header.append(col)
+def normalize_text(text):
+    if not isinstance(text, str):
+        return text
+    return text.replace('\n', '').strip().lower()
 
-                    df = pd.DataFrame(data[1:], columns=new_header)
+def maybe_flip_text(text):
+    if not isinstance(text, str) or not text.strip():
+        return text
 
-                    if "Cavity sample" in df.columns:
-                        cavity_idx = df.columns.get_loc("Cavity sample")
-                        df = df.iloc[:, :cavity_idx+1]
+    raw = text.replace('\n', '').strip()
+    reversed_text = raw[::-1]
+    normalized_reversed = normalize_text(reversed_text)
 
-                    df["page"] = page_num + 1
-                    df["table"] = table_idx + 1
-                    df = df.drop(columns=["Cavity sample", "page", "table"], errors="ignore")
-                    all_dataframes.append(df)
-    return pd.concat(all_dataframes, ignore_index=True) if all_dataframes else pd.DataFrame()
+    replacements = {
+        "setup": "Set Up",
+        "patrol": "Patrol",
+        "1x/shift": "1x/Shift",
+        "job setup": "Job Set Up",
+        "portal": "Portal",
+        "up": "Up",
+        "1x/day": "1x/Day",
+        "shift": "Shift",
+        "allpointifjobsetup": "All Point If Job Set Up",
+        "4allpointifjobsetup": "All Point If Job Set Up"
+    }
+
+    if normalized_reversed in replacements:
+        pretty_text = replacements[normalized_reversed]
+        st.write(f"[FLIP ✨] '{text}' → '{pretty_text}'")
+        return pretty_text
+
+    return text
 
 def reverse_text(text):
     if not isinstance(text, str):
@@ -48,9 +44,59 @@ def reverse_text(text):
     text = text.replace('\n', ' ')
     return text[::-1].strip()
 
+def convert_df_to_excel(df):
+    if df is None or df.empty:
+        st.warning("⚠ Cleaned dataframe is empty or None. Skipping Excel export.")
+        return None
+
+    output = BytesIO()
+    try:
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False)
+        output.seek(0)
+        return output
+    except Exception as e:
+        st.error(f"💥 Excel writing failed: {e}")
+        return None
+
+# ---------- PDF Table Extraction ----------
+
+def extract_table_from_pdf(file):
+    all_dataframes = []
+    with pdfplumber.open(file) as pdf:
+        for page in pdf.pages:
+            tables = page.extract_tables()
+            for table in tables:
+                if table:
+                    header_row_idx = None
+                    for idx, row in enumerate(table):
+                        if row and "No." in row and "Item" in row:
+                            header_row_idx = idx
+                            break
+                    if header_row_idx is not None:
+                        data = table[header_row_idx:]
+                        header = ["" if h is None or str(h).strip().lower() == "none" else str(h).strip() for h in data[0]]
+                        seen = set()
+                        new_header = []
+                        for col in header:
+                            clean_col = (col or '').strip()
+                            if clean_col and clean_col not in seen:
+                                seen.add(clean_col)
+                                new_header.append(clean_col)
+                            else:
+                                new_header.append('')
+
+                        df = pd.DataFrame(data[1:], columns=new_header)
+                        df = df[~df.apply(lambda row: row.astype(str).str.strip().eq('').all(), axis=1)]
+                        df = df.loc[:, df.columns.str.strip() != '']
+                        
+                        all_dataframes.append(df)
+    return pd.concat(all_dataframes, ignore_index=True) if all_dataframes else pd.DataFrame()
+
+# ---------- Footer & Flip Cleaners ----------
+
 def hapus_footer(df):
     keywords = ["keputusan", "keterangan", "approved", "checked", "disetujui", "diperiksa", "dibuat", "nama", "tanggal", "ttd"]
-    
     footer_start_idx = None
     for idx in df.index:
         row = df.loc[idx]
@@ -60,67 +106,97 @@ def hapus_footer(df):
             break
 
     if footer_start_idx is not None:
-        df = df.loc[:footer_start_idx-1].copy()
-        st.info(f"🧹 Footer terdeteksi mulai dari baris index {footer_start_idx}, dihapus semua baris footer.")
+        st.info(f"🧹 Footer detected at index {footer_start_idx}. Removing it.")
+        return df.loc[:footer_start_idx - 1].copy()
     else:
-        st.info("✅ Tidak ditemukan footer untuk dihapus.")
-    
+        st.info("✅ No footer found.")
+        return df
+
+def detect_and_fix_reversed_columns(df):
+    replacements = {
+        "setup": "Set Up",
+        "patrol": "Patrol",
+        "1x/shift": "1x/Shift",
+        "job setup": "Job Set Up",
+        "portal": "Portal",
+        "up": "Up",
+        "1x/day": "1x/Day",
+        "shift": "Shift",
+        "allpointifjobsetup": "All Point If Job Set Up",
+        "4allpointifjobsetup": "All Point If Job Set Up"
+    }
+
+    def try_fix_header(col_name):
+        norm = normalize_text(col_name)
+        rev = norm[::-1]
+        if rev in replacements:
+            return replacements[rev]
+        elif norm in replacements:
+            return replacements[norm]
+        else:
+            return col_name.strip()
+
+    new_columns = [try_fix_header(col) for col in df.columns]
+    df.columns = new_columns
     return df
+
+# ---------- Final Cleaning Pipeline ----------
 
 def bersihkan_dataframe(df):
+    df = detect_and_fix_reversed_columns(df)
+
     try:
-        df[0] = df[0].astype(str).str.replace(r'^(\d+)\s*(\w*)\.*', r'\1\2', regex=True)
-        df[['no_clean', 'item_clean']] = df[0].str.extract(r'^(\d+[a-zA-Z]*)\s*(.*)$')
+        if "No." in df.columns:
+            df["No."] = df["No."].astype(str).str.replace(r'^(\d+)\s*(\w*)\.*', r'\1\2', regex=True)
+        else:
+            st.warning("🛑 Column 'No.' not found.")
     except Exception as e:
-        st.warning(f"Gagal membersihkan kolom: {e}")
+        st.warning(f"Cleaning 'No.' column failed: {e}")
+
     df.dropna(how='all', inplace=True)
 
-    cols_lower = {col.lower().strip(): col for col in df.columns}
-
-    if "patrol" in cols_lower and "setup" in cols_lower:
-        col_patrol = cols_lower["patrol"]
-        col_setup = cols_lower["setup"]
-
-        temp = df[col_patrol].copy()
-        df[col_patrol] = df[col_setup]
-        df[col_setup] = temp
-
-        df[col_patrol] = df[col_patrol].apply(reverse_text)
-        df[col_setup] = df[col_setup].apply(reverse_text)
-
     df = hapus_footer(df)
+
+    # Drop clean columns if present
+    for col in ["no_clean", "item_clean"]:
+        if col in df.columns:
+            df.drop(columns=[col], inplace=True)
+
+    # Drop columns after and INCLUDING "Cavity sample"
+    df_cols = df.columns.tolist()
+    if "Cavity sample" in df_cols:
+        cavity_idx = df_cols.index("Cavity sample")
+        keep_cols = df_cols[:cavity_idx]  # truly excludes 'Cavity sample' itself
+        df = df[keep_cols]
+        st.info("🧼 'Cavity sample' detected and *exorcised*—along with all trailing columns. (≧д≦ヾ)")
+
+    df = df.applymap(lambda x: '' if str(x).strip().lower() == 'none' else maybe_flip_text(x))
     return df
 
-def convert_df_to_excel(df):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False)
-    output.seek(0)
-    return output
+# ---------- Streamlit UI ----------
 
-# Streamlit UI
-st.title("CHECK SHEET SCAN QFROM")
+st.title("📄 CHECK SHEET SCAN QFORM")
 
-uploaded_file = st.file_uploader("📤 Upload file PDF", type="pdf")
+uploaded_file = st.file_uploader("📤 Upload PDF file", type="pdf")
 
 if uploaded_file is not None:
     try:
         df = extract_table_from_pdf(uploaded_file)
 
         if df.empty:
-            st.warning("❌ Tidak ditemukan tabel di PDF")
+            st.warning("❌ No tables detected in the PDF.")
         else:
             df_clean = bersihkan_dataframe(df.copy())
-            
-            st.subheader("🧼 Tabel Setelah Dibersihkan")
+            st.subheader("🧼 Cleaned Table")
             st.dataframe(df_clean, use_container_width=True, hide_index=True)
 
             excel_data = convert_df_to_excel(df_clean)
-            st.download_button(
-                label="💾 Download Excel",
-                data=excel_data,
-                file_name="output.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            if excel_data:
+                st.download_button(
+                    label="💾 Download Excel",
+                    data=excel_data,
+                    file_name="output.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
     except Exception as e:
-        st.error(f"Gagal memproses file: {e}")
+        st.error(f"🔥 Error while processing the file: {e}")
