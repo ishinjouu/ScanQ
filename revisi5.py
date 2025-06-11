@@ -201,13 +201,17 @@ def bersihkan_dataframe(df):
 
     # 🔻 Merge kolom "Item" dengan kolom setelahnya jika header-nya kosong
     item_idx = df.columns.get_loc("Item") if "Item" in df.columns else None
-    if item_idx is not None and item_idx + 1 < len(df.columns):
-        next_col_name = df.columns[item_idx + 1]
-        if not next_col_name.strip():  # header kosong
-            df["Item"] = df["Item"].astype(str).fillna('') + " " + df[next_col_name].astype(str).fillna('')
-            df["Item"] = df["Item"].str.strip()
-            df.drop(columns=[next_col_name], inplace=True)
-            st.info(f"🧩 Kolom kosong setelah 'Item' berhasil digabung dan dihapus.")
+    # 🔻 Merge kolom "Item" dengan kolom setelahnya jika header-nya kosong
+    if "Item" in df.columns:
+        item_idx = df.columns.get_loc("Item")
+        if item_idx + 1 < len(df.columns):
+            next_col_name = df.columns[item_idx + 1]
+            if not str(next_col_name).strip():  # Header kosong
+                df["Item"] = df["Item"].astype(str).fillna('') + " " + df[next_col_name].astype(str).fillna('')
+                df["Item"] = df["Item"].str.strip()
+                df.drop(columns=[next_col_name], inplace=True)
+                st.info("🧩 Kolom kosong setelah 'Item' berhasil digabung ke kolom 'Item' dan dihapus.")
+
             
     # 🔀 Merge kolom yang memiliki pasangan "_1" jika isinya kosong
     cols = df.columns.tolist()
