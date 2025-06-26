@@ -5,4 +5,4 @@ Dowload requirement:
    pip install streamlit pdfplumber pandas numpy
 3. download file app.py, lalu di run dengan 
    streamlit run app.py
-4. Jozz, aplikasi bisa dijalankan :D
+4. Yippiee!, aplikasi bisa dijalankan >///<
