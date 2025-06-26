@@ -791,10 +791,22 @@ def transform_to_final_format(df):
             if isinstance(jenis_pengecekan, str):
                 jenis_pengecekan = [v.strip() for v in jenis_pengecekan.split(",") if v.strip()]
 
-            # Kriteria baris mencurigakan:
+            is_qtime_missing = "Qtime" not in jenis_pengecekan
+            is_check100_missing = "100%" not in jenis_pengecekan
+
+            # Deteksi simbol T dan C yang nyelip di item_check
+            tokens = item_check.strip().split()
+            if "T" in tokens and is_qtime_missing:
+                suspicious_indexes.append(idx)
+                continue
+            if "C" in tokens and is_check100_missing:
+                suspicious_indexes.append(idx)
+                continue
+
+            # Kriteria baris mencurigakan umum
             is_suspect = (
                 not any(char in item_check for char in "()")  # Tanpa (E..)
-                and get_close_matches(item_check, all_items, n=2, cutoff=0.8)
+                and get_close_matches(item_check, all_items, n=2, cutoff=0.85)
                 and (not jenis_pengecekan or jenis_pengecekan == ["-"] or "nan" in jenis_pengecekan)
             )
 
@@ -950,7 +962,7 @@ if uploaded_file:
 
             if st.session_state.show_updated_table:
                 df_view = st.session_state.df_final_data.drop(
-                    columns=["qtime", "check_100", "edit_jenis_pengecekan"], errors="ignore"
+                    columns=["qtime", "check_100", "edit_jenis_pengecekan", "status"], errors="ignore"
                 )
                 st.subheader("👁️‍🗨️ Update View")
                 st.dataframe(df_view, use_container_width=True, hide_index=True)
