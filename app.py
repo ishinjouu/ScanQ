@@ -7,12 +7,65 @@ import re
 import requests
 import json
 import traceback
+from difflib import get_close_matches
+import pandas as pd
 from typing import List
 from io import BytesIO
 from openpyxl.utils import get_column_letter
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font
+from difflib import SequenceMatcher
 
+#---------------------- API --------------------------
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+#-----------------------------------------------------
+
+def fix_split_standard_issue(row):
+    item = str(row.get("Item", "")).strip()
+    standard = str(row.get("Standard", "")).strip()
+
+    # Case 1: Spacing single uppercase letter for Q & F at the start
+    spacing = re.match(r"^([QF])\s+(.*)", item)
+    if spacing:
+        ch, rest = spacing.groups()
+        item = rest
+        standard = f"{ch} {standard}" if not standard.lower().startswith(ch.lower()) else standard
+
+    # Case 2: Spacing single uppercase letter for Q & F at the end
+    spacing = re.match(r"^(.*)\s+([QF])$", item)
+    if spacing:
+        rest, ch = spacing.groups()
+        item = rest
+        standard = f"{ch} {standard}" if not standard.lower().startswith(ch.lower()) else standard
+
+    # Case 3: Trailing single uppercase letter in the middle
+    middle = re.search(r"^(.*?)(?:\s)([A-Z])(?:\s)(.*)$", item)
+    if middle:
+        before, ch, after = middle.groups()
+        item = (before + " " + after).strip()
+        standard = f"{ch} {standard}".strip() if not standard.lower().startswith(ch.lower()) else standard
+
+    # Case 4: Leading uppercase letter at the start
+    leading = re.match(r"^([A-Z])\s+(.*)", item)
+    if leading:
+        ch, rest = leading.groups()
+        item = rest
+        standard = f"{ch}{standard}" if not standard.lower().startswith(ch.lower()) else standard
+
+    # Case 5: Trailing single uppercase letter at the end
+    trailing = re.match(r"^(.*)\s+([A-W])$", item)
+    if trailing:
+        rest, ch = trailing.groups()
+        item = rest
+        standard = f"{ch}{standard}" if not standard.lower().startswith(ch.lower()) else standard
+
+    row["Item"] = item.strip()
+    row["Standard"] = standard.strip()
+    return row
+
+# sanitazing json list from jenis_pengecekan
 def sanitize_for_json(value):
     if isinstance(value, float) and (pd.isna(value) or not np.isfinite(value)):
         return None
@@ -22,24 +75,17 @@ def sanitize_for_json(value):
         return {k: sanitize_for_json(v) for k, v in value.items()}
     return value
 
-def send_df_to_api(df):
-    try:
-        records = df.to_dict(orient="records")
-        safe_records = [sanitize_for_json(row) for row in records]
-        response = requests.post("http://192.168.148.224:5000/api/submit", json=safe_records)
-        response.raise_for_status()
-        st.success("✅ Data successfully sent to the API!")
-    except Exception as e:
-        st.error(f"❌ Failed to send data: {e}")
-
+# upload file in streamlite
 def get_file_hash(file):
     return hashlib.md5(file.getvalue()).hexdigest()
 
+# if string, then remove \n, '' & turn into lowercase
 def normalize_text(text):
     if not isinstance(text, str):
         return text
     return text.replace('\n', '').strip().lower()
 
+# reversing the "replacements"
 def maybe_flip_text(text):
     if not isinstance(text, str) or not text.strip():
         return text
@@ -48,29 +94,30 @@ def maybe_flip_text(text):
     normalized_reversed = normalize_text(reversed_text)
     replacements = {
         "setup": "Set Up",
+        "pu tes": "Set Up",
         "patrol": "Patrol",
-        "1x/shift": "1x/Shift",
+        "1x/shift": "Patrol 1x/Shift",
         "job setup": "Job Set Up",
-        "portal": "Portal",
+        "portal": "Patrol",
         "up": "Up",
-        "1x/day": "1x/Day",
+        "1x/day": "Patrol 1x/Day",
         "shift": "Shift",
         "allpointifjobsetup": "All Point If Job Set Up",
         "4allpointifjobsetup": "All Point If Job Set Up"
     }
     if normalized_reversed in replacements:
         pretty_text = replacements[normalized_reversed]
-        # st.write(f"[FLIP] '{text}' → '{pretty_text}'")
         return pretty_text
-
     return text
 
+# reversing a string / text
 def reverse_text(text):
     if not isinstance(text, str):
         return text
     text = text.replace('\n', ' ')
     return text[::-1].strip()
 
+# convert data into excel
 def convert_df_to_excel(df):
     if df is None or df.empty:
         st.warning("⚠ Cleaned dataframe is empty or None. Skipping Excel export.")
@@ -100,7 +147,7 @@ def convert_df_to_excel(df):
                             cell.alignment = Alignment(horizontal='center', vertical='center')
                 except:
                     pass
-
+                
             adjusted_width = max_length + 2
             ws.column_dimensions[col_letter].width = adjusted_width
         adjusted_output = BytesIO()
@@ -112,26 +159,75 @@ def convert_df_to_excel(df):
         st.error(f"💥 Excel writing failed: {e}")
         return None
 
+
 # ---------- PDF Table Extraction ----------
 
-@st.cache_data(show_spinner="🔄 Mengambil tabel dari PDF...")
+def pisahkan_item_dan_extra(df):
+    if "Item" in df.columns and "_2" not in df.columns:
+        extracted = df["Item"].str.extract(r"^(.*?)(\s*\(E\d+\))$")
+        df["Item"] = extracted[0].fillna(df["Item"]).str.strip()
+        df["_2"] = extracted[1].fillna("").str.strip()
+    return df
+
 def extract_table_from_pdf(file):
     all_dataframes = []
+    max_columns = 0
+
+
     with pdfplumber.open(file) as pdf:
         for page_num, page in enumerate(pdf.pages):
             tables = page.extract_tables()
-            page_tables = [] 
+            page_tables = []
+
+
+            # st.write(f"📄 Halaman {page_num + 1}")
+
+
+            # for table_idx, table in enumerate(tables):
+            #     st.write(f"  ➤ Tabel {table_idx + 1} - Jumlah baris: {len(table)}")
+            #     for i, row in enumerate(table):
+            #         st.write(f"    Row {i}: {row}")
+
+
             for table_idx, table in enumerate(tables):
                 if not table or len(table) < 2:
                     continue
+
+
                 header_row_idx = None
                 for idx, row in enumerate(table):
                     if row and any("Item" in str(cell) for cell in row):
                         header_row_idx = idx
                         break
+
+
                 if header_row_idx is not None:
                     data = table[header_row_idx:]
-                    header = [str(h) if h is not None else "" for h in data[0]]
+                    expected_cols = 13
+                    # header = [str(h).strip() if h is not None else "" for h in data[0]]
+                    header = [deduplicate_words(str(h).strip()) if h is not None else "" for h in data[0]]
+
+
+                    while len(header) < expected_cols:
+                        header.append(f"Extra_{len(header)}")
+
+
+                    normalized_data = []
+                    for row in data[1:]:
+                        padded_row = row + [""] * (len(header) - len(row))
+
+
+                        target_idx = 2
+                        if not padded_row[target_idx] or str(padded_row[target_idx]).strip() == "":
+                            for val in padded_row[5:10]:  # kolom 6-10 tempat biasanya 'a' atau 'b'
+                                if isinstance(val, str) and val.strip().isalpha() and len(val.strip()) == 1:
+                                    padded_row[target_idx] = val.strip()
+                                    break
+
+
+                        normalized_data.append(padded_row)
+
+
                     seen = {}
                     new_header = []
                     for col in header:
@@ -141,18 +237,62 @@ def extract_table_from_pdf(file):
                         else:
                             seen[col] = 0
                             new_header.append(col)
-                    df = pd.DataFrame(data[1:], columns=new_header)
+
+
+                    df = pd.DataFrame(normalized_data, columns=new_header)
                     page_tables.append(df)
                 else:
                     df = pd.DataFrame(table)
                     page_tables.append(df)
+
+                df["page_number"] = page_num + 1
+                # page_tables.append(df)
+
+
             if page_tables:
                 try:
                     merged_df = pd.concat(page_tables, axis=0, ignore_index=True)
                     all_dataframes.append(merged_df)
                 except Exception as e:
                     st.warning(f"⚠️ Gagal merge tabel di halaman {page_num+1}: {e}")
-    return pd.concat(all_dataframes, ignore_index=True) if all_dataframes else pd.DataFrame()
+
+
+    normalized_tables = []
+    for df in all_dataframes:
+        if df.shape[1] < max_columns:
+            for i in range(df.shape[1], max_columns):
+                df[f"Extra_{i}"] = ""
+        normalized_tables.append(df)
+
+
+    return pd.concat(normalized_tables, ignore_index=True) if normalized_tables else pd.DataFrame()
+
+
+def merge_partial_rows(df, value_col="Standard", threshold=3):
+    merged_rows = []
+    buffer = None
+
+    for _, row in df.iterrows():
+        non_empty_cells = [str(v).strip() for v in row if str(v).strip().lower() not in ["", "none", "nan"]]
+        
+        if str(row.get("Item", "")).strip():
+            if buffer is not None:
+                merged_rows.append(buffer)
+            buffer = row.copy()
+        elif buffer is not None and len(non_empty_cells) <= threshold:
+            # Baris lanjutan dengan isi sangat sedikit
+            existing_val = str(buffer.get(value_col, "")).strip()
+            combined_val = ", ".join(filter(None, [existing_val] + non_empty_cells))
+            buffer[value_col] = combined_val.strip(", ")
+        else:
+            if buffer is not None:
+                merged_rows.append(buffer)
+                buffer = None
+            merged_rows.append(row)  # anggap baris baru
+    if buffer is not None:
+        merged_rows.append(buffer)
+    return pd.DataFrame(merged_rows)
+
 
 def group_rows_by_item(df):
     if "Item" not in df.columns or "Standard" not in df.columns:
@@ -163,7 +303,7 @@ def group_rows_by_item(df):
         item = str(row.get("Item", "")).strip()
         std = str(row.get("Standard", "")).strip()
         detail = str(row.get("Detail Standard", "")).strip() if "Detail Standard" in df.columns else ""
-        if item != "": 
+        if item != "":
             if buffer_row is not None:
                 grouped_rows.append(buffer_row)
             buffer_row = row.copy()
@@ -181,35 +321,48 @@ def group_rows_by_item(df):
 
 def hapus_footer(df):
     keywords = ["keputusan", "keterangan", "approved", "checked", "disetujui", "diperiksa", "dibuat", "nama", "tanggal", "ttd"]
-    footer_start_idx = None
-    for idx in df.index:
-        row = df.loc[idx]
-        row_str = ' '.join([str(x).lower() for x in row if pd.notnull(x)])
-        if any(k in row_str for k in keywords):
-            footer_start_idx = idx
-            break
-    if footer_start_idx is not None:
-        st.info(f"🧹 Footer detected at index {footer_start_idx}. Removing it.")
-        return df.loc[:footer_start_idx - 1].copy()
-    else:
-        st.info("✅ No footer found.")
-        return df
+    
+    cleaned_pages = []
+    unique_pages = df["page_number"].unique()
+
+    for page in unique_pages:
+        page_df = df[df["page_number"] == page].copy() 
+        footer_start_idx = None
+
+        for idx in page_df.index:
+            row = page_df.loc[idx]
+            row_str = ' '.join([str(x).lower() for x in row if pd.notnull(x)])
+            if any(k in row_str for k in keywords):
+                footer_start_idx = idx
+                break
+        if footer_start_idx is not None:
+            st.info(f"🧹 Footer detected at index {footer_start_idx}. Removing it.")
+            page_df = page_df.loc[:footer_start_idx - 1].copy()
+        else:
+            st.info("✅ No footer found.")
+
+        cleaned_pages.append(page_df)
+    
+    final_df = pd.concat(cleaned_pages, ignore_index=True)
+    return final_df
 
 def detect_and_fix_reversed_columns(df):
     replacements = {
         "setup": "Set Up",
+        "pu tes": "Set Up",
         "patrol": "Patrol",
-        "1x/shift": "1x/Shift",
+        "1x/shift": "Patrol 1x/Shift",
         "job setup": "Job Set Up",
-        "portal": "Portal",
+        "portal": "Patrol",
         "up": "Up",
-        "1x/day": "1x/Day",
+        "1x/day": "Patrol 1x/Day",
         "shift": "Shift",
         "allpointifjobsetup": "All Point If Job Set Up",
         "4allpointifjobsetup": "All Point If Job Set Up"
     }
 
     def try_fix_header(col_name):
+        col_name = str(col_name)
         norm = normalize_text(col_name)
         rev = norm[::-1]
         if rev in replacements:
@@ -218,7 +371,7 @@ def detect_and_fix_reversed_columns(df):
             return replacements[norm]
         else:
             return col_name.strip()
-
+        
     new_columns = [try_fix_header(col) for col in df.columns]
     df.columns = new_columns
     return df
@@ -267,14 +420,221 @@ def fill_setup_from_patrol(df):
                 setup_filled.append(None)
 
     df["Set Up"] = setup_filled
-
     df.drop(columns=["_is_section", "_filled_patrol"], inplace=True)
     return df
 
 # ---------- Final Cleaning ----------
 
+def hapus_ok_ng(text):
+    if not isinstance(text, str):
+        return text
+    return re.sub(r'\bOK\b\s*[/-]?\s*\bN[G]?\b', '', text, flags=re.IGNORECASE).strip()
+
+def fill_standard_from_job_setup(df):
+    df = df.copy()
+    if "Set Up" not in df.columns or "Standard" not in df.columns:
+        return df
+    last_valid_std = None
+    for idx, row in df.iterrows():
+        jenis = str(row.get("Set Up", "")).strip().lower()
+        std = str(row.get("Standard", "")).strip()
+        if jenis == "job setup":
+            if std not in ["", "-", "nan", "none", None]:
+                last_valid_std = std
+            elif last_valid_std:
+                df.at[idx, "Standard"] = last_valid_std
+    return df
+
+def normalisasi_m_notasi(standard):
+    if not isinstance(standard, str):
+        return standard
+    pattern = r'\b[Mm]\s?-?\s?(\d{1,2})(?![\d.±°])\b'
+    match = re.search(pattern, standard)
+    if match:
+        angka = match.group(1)
+        standard = re.sub(pattern, f'[M{angka}]', standard)
+    return standard
+
+def deduplicate_words(text):
+    if not isinstance(text, str):
+        return text
+    words = text.strip().split()
+    deduped = []
+    for word in words:
+        if not deduped or deduped[-1] != word:
+            deduped.append(word)
+    return " ".join(deduped)
+
+ROMAWI_PATTERN = re.compile(r"^(?=[MDCLXVI])(M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3}))$")
+
+def is_romawi(val):
+    if isinstance(val, str):
+        return ROMAWI_PATTERN.fullmatch(val.strip().upper()) is not None
+    return False
+
+def fill_down_except_romawi(df, kolom_target):
+    df = df.copy()
+    last_valid = None
+    for idx, val in df[kolom_target].items():
+        if pd.notnull(val) and str(val).strip() != "" and not is_romawi(val):
+            last_valid = val
+        elif pd.isnull(val) or str(val).strip() == "":
+            df.at[idx, kolom_target] = last_valid
+    return df
+
+def gabungkan_kolom_item(df, kolom_Item='Standard'):
+    if kolom_Item not in df.columns:
+        st.warning(f"🛑 Kolom '{kolom_Item}' tidak ditemukan.")
+        return df
+
+    idx_Item = df.columns.get_loc(kolom_Item)
+
+    if idx_Item + 1 >= len(df.columns):
+        st.warning("🛑 Tidak ada kolom setelah kolom Item.")
+        return df
+
+    kolom_1 = df.columns[idx_Item + 1]
+    kolom_2 = df.columns[idx_Item + 2] if idx_Item + 2 < len(df.columns) else None
+
+    gabung_kolom_1 = pd.isna(kolom_1) or str(kolom_1).strip() == ''
+    gabung_kolom_2 = kolom_2 == '_1'
+
+    if gabung_kolom_1:
+        if gabung_kolom_2 and kolom_2 in df.columns:
+            st.info(f"🔧 Gabungkan isi dari dua kolom setelah '{kolom_Item}' → format: 'Item (Tambahan1 - Tambahan2)'")
+
+            def gabung(val_Item, val1, val2):
+                vals = [str(v).strip() for v in [val1, val2] if pd.notna(v) and str(v).strip()]
+                if vals:
+                    return f"{val_Item} ({' - '.join(vals)})"
+                return val_Item
+
+            df[kolom_Item] = df.apply(lambda row: gabung(row[kolom_Item], row[kolom_1], row[kolom_2]), axis=1)
+            df.drop(columns=[kolom_1, kolom_2], inplace=True)
+        else:
+            st.info(f"🔧 Gabungkan isi dari kolom tak bernama setelah '{kolom_Item}' → format: 'Item (Tambahan)'")
+
+            def gabung(val_Item, val_samping):
+                if pd.notna(val_samping) and str(val_samping).strip() != '':
+                    return f"{val_Item} ({val_samping})"
+                return val_Item
+
+            df[kolom_Item] = df.apply(lambda row: gabung(row[kolom_Item], row[kolom_1]), axis=1)
+            df.drop(columns=[kolom_1], inplace=True)
+
+        # Rename any remaining unnamed columns
+        df.columns = [f"col_{i}" if not c or pd.isna(c) else c for i, c in enumerate(df.columns)]
+    else:
+        st.info("ℹ️ Kolom setelah 'Item' punya nama, tidak digabung.")
+
+    return df
+
+def fill_item(df, kolom_item='Item', kolom_standard='Standard'):
+    df = df.reset_index(drop=True)  
+    def is_section(text):
+        if isinstance(text, str):
+            return bool(re.match(r'^[IVXLCDM]+\.', text.strip()))  # regex untuk format Romawi titik (mis. "I.", "II.", dll)
+        return False
+    for i in range(1, len(df)):
+        item = df.at[i, kolom_item]
+        std = df.at[i, kolom_standard] if kolom_standard in df.columns else ''
+        if (pd.isna(item) or str(item).strip() == '') and pd.notna(std) and str(std).strip() != '':
+            item_sebelumnya = df.at[i - 1, kolom_item]
+            if not is_section(item_sebelumnya):
+                df.at[i, kolom_item] = item_sebelumnya
+    return df
+
+def normalisasi_patrol(patrol_input):
+    if not isinstance(patrol_input, str):
+        return ""
+    teks = patrol_input.lower().replace("\n", " ").replace("\r", " ").strip()
+    mapping = {
+        "Patrol 1x/Shift": [
+            "1x/shift", "shift/1x", "1 shift", "x1/shift", "1x shift", "x1 / shift", "shift x1",
+            "tfihs / x1", "x1 / tfihs", "tfihs/1x", "1x / tfihs", "tfihs x1",
+            "tfihs / x1 tfihs / x1", "tfihs / x1 tfihs / x1 tfihs / x1", "1x / shift"
+        ],
+        "Patrol 1x/Day": [
+            "1x/day", "day/1x", "1 day", "1x per day", "per day", "yad/x1", "x1/yad"
+        ]
+    }
+    hasil = set()
+    for kategori, variasi_list in mapping.items():
+        for variasi in variasi_list:
+            if variasi in teks:
+                hasil.add(kategori)
+    return ", ".join(sorted(hasil))
+
+# label bolong b. dll
+def isi_label_abjad_di_antara(df, kolom='Item', No='No.'):
+    pola = re.compile(r'^([a-zA-Z])\.\s*(.+)$')
+    new_items = []
+    last_label = None
+    for i in range(len(df)):
+        if pd.notna(df.at[i, No]):
+            last_label = None
+
+        item = str(df.at[i, kolom]).strip()
+        match = pola.match(item)
+        if match:
+            last_label = match.group(1)
+            new_items.append(item)
+        else:
+            if last_label:
+                new_items.append(f"{last_label}. {item}")
+            else:
+                new_items.append(item)
+    df[kolom] = new_items
+    return df
+
+def gabungkan_kolom_mirip(df, target_col, alias_list):
+    """
+    Menggabungkan beberapa kolom dengan nama typo/mirip ke dalam satu kolom resmi (target_col).
+    Nilai yang tidak kosong akan diprioritaskan dari kanan ke kiri (yang paling kanan akan menimpa).
+    """
+    if target_col not in df.columns:
+        df[target_col] = None
+    for col in alias_list:
+        if col in df.columns:
+            df[target_col] = df[target_col].combine_first(df[col])
+            df.drop(columns=[col], inplace=True)
+    return df
+
+# -------------- Bersihkan Data Frame ---------------
 def bersihkan_dataframe(df):
     df = detect_and_fix_reversed_columns(df)
+    # -------------- Patrol Rusak --------------
+    def perbaiki_patrol_mentah(teks):
+        if not isinstance(teks, str):
+            return teks
+        teks = teks.lower()
+        teks = re.sub(r"\s+", " ", teks) 
+        teks = teks.strip()
+        if "tfihs" in teks and "x1" in teks:
+            return "Patrol 1x/Shift"
+        if "yad" in teks and "x1" in teks:
+            return "Patrol 1x/Day"
+        if "1x" in teks and "shift" in teks:
+            return "Patrol 1x/Shift"
+        if "1x" in teks and "day" in teks:
+            return "Patrol 1x/Day"
+        if "tfihs" in teks and "x2" in teks:
+            return "Patrol 1x/Shift"
+        if "yad" in teks and "x2" in teks:
+            return "Patrol 1x/Day"
+        if "2x" in teks and "shift" in teks:
+            return "Patrol 1x/Shift"
+        if "2x" in teks and "day" in teks:
+            return "Patrol 1x/Day"
+        if "tfihs" in teks and "x3" in teks:
+            return "Patrol 1x/Shift"
+        if "yad" in teks and "x3" in teks:
+            return "Patrol 1x/Day"
+        if "3x" in teks and "shift" in teks:
+            return "Patrol 1x/Shift"
+        if "3x" in teks and "day" in teks:
+            return "Patrol 1x/Day"
+        return teks
     try:
         if "No." in df.columns:
             df["No."] = df["No."].astype(str).str.replace(r'^(\d+)\s*(\w*)\.*', r'\1\2', regex=True)
@@ -286,13 +646,21 @@ def bersihkan_dataframe(df):
     df.dropna(how='all', inplace=True)
     df = fill_setup_from_patrol(df)
     df = hapus_footer(df)
+    df = merge_partial_rows(df)
     df = group_rows_by_item(df)
-    df = fill_patrol_column(df)
-    
+    df = pisahkan_item_dan_extra(df)
+    if "Patrol" in df.columns:
+        df["Patrol"] = df["Patrol"].apply(perbaiki_patrol_mentah)
+        if "_is_section" in df.columns or "No." in df.columns:
+            df = fill_patrol_column(df)
+    else:
+        df["Patrol"] = "Patrol 1x/Shift"
+
     for col in ["no_clean", "item_clean"]:
         if col in df.columns:
             df.drop(columns=[col], inplace=True)
-    cavity_columns = [col for col in df.columns if col.lower().startswith("cavity sample")]
+    # cavity_columns = [col for col in df.columns if col.lower().startswith("cavity sample")]
+    cavity_columns = [col for col in df.columns if any(key in col.lower() for key in ("cavity", "sample"))]
     if cavity_columns:
         df_cols = df.columns.tolist()
         first_cavity = cavity_columns[0]
@@ -301,9 +669,10 @@ def bersihkan_dataframe(df):
         df = df[keep_cols]
         if len(cavity_columns) > 1:
             df.drop(columns=[col for col in cavity_columns[1:]], inplace=True)
-        st.info("🧼 Kolom 'Cavity sample' dirapihkan")
 
     if "Standard" in df.columns:
+        df["Standard"] = df["Standard"].apply(normalisasi_m_notasi)
+
         valid_patterns = re.compile(
             r'^(?:\s*'
             r'((?:min|max|\d+|[a-zA-Z]+)'
@@ -323,16 +692,49 @@ def bersihkan_dataframe(df):
             return value
         df["Standard"] = df["Standard"].apply(validate_standard)
     df = df.applymap(lambda x: '' if str(x).strip().lower() == 'none' else maybe_flip_text(x))
+
+    kolom_bersihkan = ["Standard", "_1", "_2"]
+    for kolom in kolom_bersihkan:
+        if kolom in df.columns:
+            df[kolom] = df[kolom].apply(hapus_ok_ng)
+    df = fill_standard_from_job_setup(df)
+
+    for kolom in ["No.","Standard", "item_check", "Jenis Point", "Alat Ukur"]:
+        if kolom in df.columns:
+            df = fill_down_except_romawi(df, kolom)
+            df = df.apply(fix_split_standard_issue, axis=1)
+    df = fill_standard_from_job_setup(df)
+    df = fill_item(df, kolom_item='Item', kolom_standard='Standard')
+    df = gabungkan_kolom_item(df, kolom_Item="Item")
+    df = isi_label_abjad_di_antara(df, kolom='Item')
+    if "patrol" in df.columns:
+        df["patrol"] = df["patrol"].apply(lambda x: x.split() if isinstance(x, str) else x)
+        df["patrol"] = df["patrol"].apply(normalisasi_patrol)
+    # if = kolomnya ada 2
+    df.columns = [col.strip().lower().replace('\n', ' ') for col in df.columns]
+    df = gabungkan_kolom_mirip(df, "control_method", ["control method", "contorl method", "contro metho"])
+    df.columns = [col.replace('_', ' ').title() for col in df.columns]
+    # --------- Backup: Setup dan Patrol Default ---------
+    if "Set Up" not in df.columns:
+        df["Set Up"] = "Job Setup"
+
+    if "Patrol" not in df.columns:
+        df["Patrol"] = "Patrol 1x/Shift"
+
     return df
 
 # ---------- Transform ke Format Final ----------
 
+SECTION_REGEX = r'^\s*(I{1,3}|IV|V|VI{0,3}|VII{0,3}|VIII|IX|X)\s*[\.\-–]\s+.+'
+
 def is_section_row(row):
-    joined = ' '.join([str(cell) for cell in row if pd.notnull(cell)]).strip()
-    return bool(re.match(r'^(I|II|III|IV|V|VI|VII|VIII|IX|X)\b', joined)) and joined.isupper()
+    first_col = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+    print(f"[DEBUG] Cek kolom 1 section: {first_col}")
+    return bool(re.match(SECTION_REGEX, first_col, re.IGNORECASE))
 
 def extract_section_title(row):
-    return ' '.join([str(cell) for cell in row if pd.notnull(cell)]).strip()
+    first_col = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+    return first_col
 
 def clean_empty_rows(df_final, max_null=5):
     def is_row_useless(row):
@@ -349,7 +751,7 @@ def merge_point_item(df):
     for point, item in zip(df["point_check"], df["item_check"]):
         item_str = str(item).strip()
         if re.match(r'^[a-zA-Z]\.', item_str):
-            letter = item_str[0] 
+            letter = item_str[0]
             remaining_item = re.sub(r'^[a-zA-Z]\.\s*', '', item_str, count=1)  
             new_point_check.append(f"{point}{letter}")
             new_item_check.append(remaining_item)
@@ -372,14 +774,31 @@ def roman_to_int(roman):
 
 def move_single_caps_to_note(row):
     standard = str(row.get("standard", "")).strip()
+    item_check = str(row.get("item_check", "")).strip()
     catatan = str(row.get("catatan", "")).strip()
-    match = re.search(r'(^|\s)([A-Z])(?![\w.])($|\s)', standard)
-    if match:
-        single_cap = match.group(2)
-        tag = f"[{single_cap}]"
+
+    tags_found = set()
+
+    # Cek huruf kapital tunggal di kolom standard
+    matches_standard = re.findall(r'(^|\s)([A-Z])(?![\w.])($|\s)', standard)
+    for match in matches_standard:
+        single_cap = match[1]
+        if single_cap in ["F", "M", "Q"]:
+            tags_found.add(f"[{single_cap}]")
+    # Hapus huruf kapital dari kolom standard
+    standard = re.sub(r'(^|\s)([A-Z])(?![\w.])($|\s)', ' ', standard).strip()
+
+    # Cek huruf kapital tunggal di item_check dalam konteks akhir kalimat / spasi
+    matches_item = re.findall(r'\b([A-Z])\b', item_check)
+    for single_cap in matches_item:
+        if single_cap in ["F", "M", "Q"]:
+            tags_found.add(f"[{single_cap}]")
+
+    # Tambahkan tag ke catatan (hindari duplikat)
+    for tag in sorted(tags_found):
         if tag not in catatan:
             catatan = f"{catatan} {tag}".strip()
-        standard = re.sub(r'(^|\s)([A-Z])(?![\w.])($|\s)', ' ', standard).strip()
+
     row["standard"] = standard
     row["catatan"] = catatan
     return row
@@ -398,8 +817,10 @@ def copy_special_measurements_to_note(row):
             catatan += f" {tag}"
 
     size_patterns = [
-        r"[Ø°]\d+(?:\.\d+)?\s*±\s*[+−-]?\d+(?:\.\d+)?",                            # Ø10 ±0.1 atau °10 ± 0.5
-        r"[Ø°]\d+(?:\.\d+)?\s*\(\s*\d+(?:\.\d+)?\s*~\s*[+−-]?\d+(?:\.\d+)?\s*\)",  # Ø6.1 ( 0 ~ +0.1 )
+        r"[Ø°]\d+(?:\.\d+)?\s*±\s*[+−-]?\d+(?:\.\d+)?",                                     # Ø10 ±0.1 atau °10 ± 0.5
+        r"[Ø°]\d+(?:\.\d+)?\s*\(\s*\d+(?:\.\d+)?\s*~\s*[+−-]?\d+(?:\.\d+)?\s*\)",           # Ø6.1 ( 0 ~ +0.1 )
+        r"[Ø°]\d+(?:\.\d+)?\s*\(\s*[+−-]?\d+(?:\.\d+)?\s*~\s*[+−-]?\d+(?:\.\d+)?\s*\)",     # Ø12.15 (-0.15 ~ +0.25)
+        r"\d+(?:\.\d+)?º\s*±\s*\d+(?:\.\d+)?º",                                             # 15º ± 3º
     ]
 
     ukuran_found = None
@@ -418,28 +839,26 @@ def copy_special_measurements_to_note(row):
 def normalize_note_tags(catatan):
     if not isinstance(catatan, str):
         return catatan
-
     all_tags = re.findall(r"\[([^\[\]]+)\]", catatan)
-
     allowed_tags = []
     for tag in all_tags:
         tag_clean = tag.strip()
-        if tag_clean in ["F", "M"]:
+        if tag_clean in ["F", "M", "Q"]:
             allowed_tags.append(f"[{tag_clean}]")
         elif re.match(r"(?i)^min\s+\d+(\.\d+)?$", tag_clean):
             allowed_tags.append(f"[{tag_clean}]")
         elif re.match(r"(?i)^max\s+\d+(\.\d+)?$", tag_clean):
             allowed_tags.append(f"[{tag_clean}]")
 
-    for tag in allowed_tags:
-        catatan = re.sub(r"\[[^\[\]]+\]", "", catatan)
+    for tag in all_tags:
+        catatan = catatan.replace(f"[{tag}]", "")
 
     ordered = []
-    for tag in ["[F]", "[M]"]:
+    for tag in ["[F]", "[M]", "[Q]"]:
         if tag in allowed_tags:
             ordered.append(tag)
     for tag in allowed_tags:
-        if tag not in ["[F]", "[M]"]:
+        if tag not in ["[F]", "[M]", "[Q]"]:
             ordered.append(tag)
 
     catatan_clean = catatan.strip()
@@ -451,13 +870,17 @@ def normalize_note_tags(catatan):
 
 def parse_standard_value(row):
     standard = str(row.get("standard", "")).strip()
-    jenis_point = row.get("jenis_point", "")
+    jenis_point = str(row.get("jenis_point", "")).strip().lower()
+
+    # Ganti koma dengan titik jika jenis_point adalah "dengan ukur" atau "dengan cmm"
+    if jenis_point in ["dengan ukur", "dengan cmm"]:
+        standard = standard.replace(",", ".")
 
     if jenis_point == "Tanpa Ukur":
         return pd.Series([None, None, None], index=["std_value", "std_min", "std_max"])
 
     # 1. 0 ±0.2
-    match1 = re.match(r'^([\d.]+)\s*±\s*([\d.]+)$', standard)
+    match1 = re.search(r'(\d+(?:\.\d+)?)\s*±\s*(\d+(?:\.\d+)?)', standard)
     if match1:
         nominal = float(match1.group(1))
         delta = float(match1.group(2))
@@ -553,31 +976,132 @@ def parse_standard_value(row):
         lower = float(match13.group(2))
         upper = float(match13.group(3))
         return pd.Series([nominal, lower, upper], index=["std_value", "std_min", "std_max"])
-    
-    # match14: Reff. 0 ( 0 ~ +0.5 )
-    match14 = re.match(
-        r'^.*?(-?\d+(?:\.\d+)?)\s*\(\s*([+-]?\d+(?:\.\d+)?)\s*~\s*([+-]?\d+(?:\.\d+)?)\s*\)$',
-        standard
-    )
+   
+    # 14. Reff. 0 ( 0 ~ +0.5 )
+    match14 = re.match(r'^.*?(-?\d+(?:\.\d+)?)\s*\(\s*([+-]?\d+(?:\.\d+)?)\s*~\s*([+-]?\d+(?:\.\d+)?)\s*\)$',standard)
     if match14:
         nominal = float(match14.group(1))
         lower = float(match14.group(2))
         upper = float(match14.group(3))
         return pd.Series([nominal, lower, upper], index=["std_value", "std_min", "std_max"])
+    
+    # 15. Format: 15º ± 3º
+    match15 = re.match(r'^(\d+(?:\.\d+)?)\s*º?\s*[±+]\s*(\d+(?:\.\d+)?)\s*º?$', standard)
+    if match15:
+        value = float(match15.group(1))
+        margin = float(match15.group(2))
+        return pd.Series([value, -margin, margin], index=["std_value", "std_min", "std_max"])
+
+    # 16. Ambil angka dari bagian akhir teks seperti "Tidak ambles / minus 0 ( 0 ~ +0.5 )"
+    match16 = re.search(r'(\d+(?:\.\d+)?)\s*\(\s*([+-]?\d+(?:\.\d+)?)\s*~\s*([+-]?\d+(?:\.\d+)?)\s*\)', standard)
+    if match16:
+        nominal = float(match16.group(1))
+        lower = float(match16.group(2))
+        upper = float(match16.group(3))
+        return pd.Series([nominal, lower, upper], index=["std_value", "std_min", "std_max"])
+    
+    # 17. Format seperti "Reff. 0 ( -0.3 ~ 0 )" atau "Reff. 0 ( 0 ~ +0.5 )"
+    match17 = re.search(
+        r'reff\.*\s*([+-]?\d+(?:[.,]\d+)?)\s*\(\s*([+-]?\d+(?:[.,]\d+)?)\s*~\s*([+-]?\d+(?:[.,]\d+)?)\s*\)',
+        standard,
+        re.IGNORECASE
+    )
+    if match17:
+        nominal = float(match17.group(1).replace(",", "."))
+        lower = float(match17.group(2).replace(",", "."))
+        upper = float(match17.group(3).replace(",", "."))
+        return pd.Series([nominal, lower, upper], index=["std_value", "std_min", "std_max"])
 
     return pd.Series([None, None, None], index=["std_value", "std_min", "std_max"])
 
-@st.cache_data(show_spinner="⚙️ Mengubah ke format final...")
+def fill_empty_catatan_from_group(df):
+    df = df.copy()
+
+    for idx, row in df.iterrows():
+        if row.get("jenis_point") not in ["Dengan Ukur", "Dengan CMM"]:
+            continue
+        if row.get('catatan') and row['catatan'].strip() not in ["-", ""]:
+            continue
+
+        item = row['item_check']
+        point_prefix = re.match(r'^(\d+[a-zA-Z]*)', str(row['point_check']))
+        point_prefix = point_prefix.group(1) if point_prefix else ""
+
+        for j, ref_row in df.iterrows():
+            if j == idx:
+                continue
+            if ref_row.get("jenis_point") not in ["Dengan Ukur", "Dengan CMM"]:
+                continue
+
+            ref_prefix = re.match(r'^(\d+[a-zA-Z]*)', str(ref_row['point_check']))
+            ref_prefix = ref_prefix.group(1) if ref_prefix else ""
+
+            if (
+                ref_prefix == point_prefix and
+                isinstance(ref_row['item_check'], str)
+            ):
+                sim = SequenceMatcher(None, ref_row['item_check'], item).ratio()
+                if sim >= 0.8 and ref_row['catatan']:
+                    df.at[idx, 'catatan'] = ref_row['catatan']
+                    break
+
+    return df
+
+# ----------- Validsi -----------
+def find_mid_sequence_breaks(df):
+    suspicious_indexes = []
+    pattern = r"\(E(\d+)\)"
+    grouped = {}
+    for idx, row in df.iterrows():
+        item = str(row.get("item_check", "")).strip()
+        base = re.sub(pattern, "", item).strip().lower()
+        match = re.search(pattern, item)
+        if base not in grouped:
+            grouped[base] = []
+        grouped[base].append((idx, item, int(match.group(1)) if match else None))
+
+    for base, items in grouped.items():
+        items.sort(key=lambda x: x[0])
+        numbers = [num for _, _, num in items if num is not None]
+        if len(numbers) < 2:
+            continue
+        min_e = min(numbers)
+        max_e = max(numbers)
+
+        for idx, item_text, num in items:
+            if num is None:
+                pos = [i for i, (_, _, n) in enumerate(items) if n is not None]
+                if not pos:
+                    continue
+                first = pos[0]
+                last = pos[-1]
+                current_pos = items.index((idx, item_text, num))
+                if first < current_pos < last:
+                    suspicious_indexes.append(idx)
+
+    return suspicious_indexes
+    # ----------- Validsi -----------
+
 def transform_to_final_format(df):
     df.columns = [col.strip().replace('\n', ' ').title() for col in df.columns]
     if "Control Method" not in df.columns:
         df["Control Method"] = np.nan
+    df = df.replace(to_replace=["", "nan", "None"], value=np.nan)
+   
+    def bersihkan_control_method_bocor(text):
+        if not isinstance(text, str):
+            return text
+        # Hapus mulai dari OK sampai NG atau N
+        cleaned = re.sub(r"\bOK\b.*?\bN[G]?\b", "", text, flags=re.IGNORECASE).strip()
+        return cleaned
+
     df["Control Method"] = df["Control Method"].fillna(method="ffill")
+    df["Control Method"] = df["Control Method"].apply(bersihkan_control_method_bocor)
     df = df.replace(to_replace=["", "nan", "None"], value=np.nan)
 
-    dengan_ukur_keywords = ["caliper", "hg", "depth cal", "pitch dial", "rough. t", "hitung", "depth clp"]
-    tanpa_ukur_keywords = [ 
-        "visual", "pg", "snap g.", "visual & punch", "visual + kikir", "visual & kikir", 
+    dengan_ukur_keywords = ["caliper", "hg", "depth cal", "pitch dial", "rough. t", "hitung", "depth clp", "height g", "dial g"]
+    tanpa_ukur_keywords = [
+        "visual", "pg", "snap g.", "visual & punch", "visual + kikir", "visual & kikir",
         "machining test", "visual ( reff. master rough.)", "insp. jig", "finishing test"
     ]
     dengan_cmm_keywords = ["cmm"]
@@ -589,8 +1113,12 @@ def transform_to_final_format(df):
 
     for idx, row in df.iterrows():
         if is_section_row(row):
-            current_section = extract_section_title(row)
+            maybe_section = extract_section_title(row)
+            print(f"🔍 [Row {idx}] Detected section → {maybe_section}")
+            if maybe_section.strip() and len(maybe_section.strip()) > 5:
+                current_section = maybe_section.strip()
             continue
+
         if row.isna().all():
             continue
 
@@ -603,12 +1131,22 @@ def transform_to_final_format(df):
         final_note = f"{original_note} {extracted_note}".strip() if extracted_note else original_note
 
         item_raw = row.get("Item", np.nan)
-        extra = row.get("_2", np.nan)
+        extra1 = row.get("_1", np.nan)
+        extra2 = row.get("_2", row.get("2", np.nan))
         item = str(item_raw).strip() if pd.notna(item_raw) else ""
-        extra = str(extra).strip() if pd.notna(extra) else ""
+        extra1 = str(extra1).strip() if pd.notna(extra1) else ""
+        extra2 = str(extra2).strip() if pd.notna(extra2) else ""
         if item:
             last_valid_item = item
-        item_check = f"{item or last_valid_item} ({extra})" if extra else (item or last_valid_item)
+        extras = []
+        if extra1:
+            extras.append(extra1)
+        if extra2 and f"({extra2})" not in item:
+            extras.append(extra2)
+
+        item_check = f"{item or last_valid_item}"
+        if extras:
+            item_check += " (" + ", ".join(extras) + ")"
 
         control_method_raw = row.get("Control Method", "")
         control_method = str(control_method_raw).strip() if pd.notna(control_method_raw) else ""
@@ -625,8 +1163,8 @@ def transform_to_final_format(df):
         else:
             jenis_point = "Lainnya"
 
-        qtime_checked = st.session_state.get(f"qtime_{idx}", False)
-        check100_checked = st.session_state.get(f"check100_{idx}", False)
+        # qtime_checked = st.session_state.get(f"qtime_{idx}", False)
+        # check100_checked = st.session_state.get(f"check100_{idx}", False)
 
         jenis_pengecekan = [
             v.strip()
@@ -635,24 +1173,20 @@ def transform_to_final_format(df):
             if v.strip() and v.strip() != "-"
         ]
 
-        # Deteksi huruf kapital spesial di item_check
+        # Deteksi huruf kapital spesial di item_check (Qtime & 100%)
         if jenis_point == "Tanpa Ukur":
             tokens = item_check.split()
-
             if "T" in tokens:
-                jenis_pengecekan.append("Qtime")
+                jenis_pengecekan.append("Q-time")
                 tokens.remove("T")
-
             if "C" in tokens:
                 jenis_pengecekan.append("100%")
                 tokens.remove("C")
-
             item_check = " ".join(tokens)
-
-        if qtime_checked:
-            jenis_pengecekan.append("Qtime")
-        if check100_checked:
-            jenis_pengecekan.append("100%")
+        # if qtime_checked:
+        #     jenis_pengecekan.append("Q-time")
+        # if check100_checked:
+        #     jenis_pengecekan.append("100%")
         jenis_pengecekan = list(dict.fromkeys(jenis_pengecekan))
 
         final_row = {
@@ -663,30 +1197,13 @@ def transform_to_final_format(df):
             "item_check": item_check,
             "control_method": control_method or last_control_method,
             "standard": str(row.get("Standard", "")).strip(),
-            "jenis_pengecekan": jenis_pengecekan,
-            "qtime": qtime_checked,
-            "check_100": check100_checked,
+            "jenis_pengecekan": jenis_pengecekan
+            # "Q-time": qtime_checked,
+            # "check_100": check100_checked,
         }
         final_rows.append(final_row)
-
     df_result = pd.DataFrame(final_rows)
-
-    def propagate_f_marker(df_result):
-        df_result["base_number"] = df_result["point_check"].str.extract(r"^(\d+)")
-        grouped = df_result.groupby("base_number")
-        for base, group in grouped:
-            if group["catatan"].str.contains(r"\[F\]", na=False).any():
-                for idx in group.index:
-                    catatan = df_result.at[idx, "catatan"]
-                    if "[F]" in catatan:
-                        if not catatan.strip().startswith("[F]"):
-                            tags = re.findall(r"\[[^\[\]]+\]", catatan)
-                            tags = [t for t in tags if t != "[F]"]
-                            df_result.at[idx, "catatan"] = "[F] " + " ".join(tags)
-                    else:
-                        df_result.at[idx, "catatan"] = "[F] " + catatan.strip()
-        df_result.drop(columns=["base_number"], inplace=True)
-
+   
     def apply_note_transformations(row):
         if row["jenis_point"] in ["Dengan Ukur", "Dengan CMM"]:
             row = copy_special_measurements_to_note(row)
@@ -698,7 +1215,7 @@ def transform_to_final_format(df):
 
     map_jenis2 = {}
     if "Item" in df.columns and "Patrol" in df.columns:
-        df["Patrol"] = df["Patrol"].fillna(method="ffill") 
+        df["Patrol"] = df["Patrol"].fillna(method="ffill")
         for _, row2 in df.iterrows():
             item_key = str(row2.get("Item", "")).strip()
             extra = str(row2.get("_2", "")).strip()
@@ -739,7 +1256,7 @@ def transform_to_final_format(df):
         def clean_catatan(row):
             catatan = str(row["catatan"]).strip()
             jenis = str(row["jenis_point"]).strip()
-            has_tag = any(tag in catatan for tag in ["[F]", "[M]"])
+            has_tag = any(tag in catatan for tag in ["[F]", "[M]", "[Q]"])
             kosong = catatan == ""
             if jenis == "Tanpa Ukur":
                 return "-" if kosong and not has_tag else catatan
@@ -754,7 +1271,7 @@ def transform_to_final_format(df):
         for col in cols_to_fill:
             if col in df.columns:
                 df[col] = df[col].replace(["", "nan", "None"], np.nan).fillna("-")
-        
+       
         if "jenis_pengecekan" in df.columns:
             df["jenis_pengecekan"] = df["jenis_pengecekan"].apply(
                 lambda val: [v for v in val if v != "-"] if isinstance(val, list) else ["-"]
@@ -768,17 +1285,36 @@ def transform_to_final_format(df):
     def move_m_from_standard_to_note(row):
         std = str(row["standard"]).strip()
         catatan = str(row["catatan"]).strip()
-
-        if re.search(r'(^|\s|\(|\[)M($|\s|[\]\),.])', std):
-            if "[M]" not in catatan:
-                catatan = f"{catatan} [M]".strip()
-            std = re.sub(r'(^|\s|\(|\[)M($|\s|[\]\),.])', ' ', std).strip()
-
+        match = re.findall(r'\[M\d{1,2}\]', std)
+        if match:
+            for m_tag in match:
+                std = std.replace(m_tag, "").strip()
+                catatan = catatan.replace(m_tag, "").strip()
+            catatan = f"{' '.join(match)} {catatan}".strip()
         row["standard"] = std
         row["catatan"] = catatan
         return row
-    #ini
-    from difflib import get_close_matches
+   
+    # --------------- Temukan duplikat sama persis -----------------
+    def find_exact_duplicates(df):
+        duplicate_indexes = []
+        seen_keys = set()
+        key_columns = [
+            "section", "point_check", "jenis_point", "catatan",
+            "item_check", "control_method", "std_value", "std_min", "std_max"
+        ]
+        for idx, row in df.iterrows():
+            row_key = tuple(
+                str(row.get(col, "")).strip().lower().replace(", ", ",").replace(" ,", ",").replace("\n", " ")
+                if not pd.isna(row.get(col)) else ""
+                for col in key_columns
+            )
+            if row_key in seen_keys:
+                duplicate_indexes.append(idx)
+            else:
+                seen_keys.add(row_key)
+
+        return duplicate_indexes
 
     def find_incomplete_duplicates(df):
         all_items = df["item_check"].tolist()
@@ -790,76 +1326,117 @@ def transform_to_final_format(df):
 
             if isinstance(jenis_pengecekan, str):
                 jenis_pengecekan = [v.strip() for v in jenis_pengecekan.split(",") if v.strip()]
+            elif not isinstance(jenis_pengecekan, list):
+                jenis_pengecekan = [str(jenis_pengecekan).strip()]
 
-            # Kriteria baris mencurigakan:
+            is_qtime_missing = "Q-time" not in jenis_pengecekan
+            is_check100_missing = "100%" not in jenis_pengecekan
+
+            tokens = item_check.strip().split()
+            if "T" in tokens and is_qtime_missing:
+                suspicious_indexes.append(idx)
+                continue
+            if "C" in tokens and is_check100_missing:
+                suspicious_indexes.append(idx)
+                continue
+
             is_suspect = (
-                not any(char in item_check for char in "()")  # Tanpa (E..)
-                and get_close_matches(item_check, all_items, n=2, cutoff=0.8)
-                and (not jenis_pengecekan or jenis_pengecekan == ["-"] or "nan" in jenis_pengecekan)
+                not any(char in item_check for char in "()") and
+                get_close_matches(item_check, all_items, n=2, cutoff=0.85) and
+                (
+                    not jenis_pengecekan or
+                    jenis_pengecekan == ["-"] or
+                    any(pd.isna(j) or str(j).lower() == "nan" for j in jenis_pengecekan)
+                )
             )
 
             if is_suspect:
                 suspicious_indexes.append(idx)
-
         return suspicious_indexes
+   
+    # ---------------------- validasi ----------------------
+    def find_invalid_format_rows(df):
+        invalid_indexes = []
 
-    # Tandai baris-baris mencurigakan
-    suspicious_rows = find_incomplete_duplicates(df_result)
+        for idx, row in df.iterrows():
+            jenis_pengecekan = row.get("jenis_pengecekan", [])
 
-    df_result["status"] = df_result.get("status", "valid")  # kalau belum ada
-    df_result.loc[suspicious_rows, "status"] = "duplikat_parsing"
-    #ini
+            if isinstance(jenis_pengecekan, str):
+                jenis_pengecekan = [v.strip() for v in jenis_pengecekan.split(",") if v.strip()]
+            elif not isinstance(jenis_pengecekan, list):
+                if pd.isna(jenis_pengecekan):
+                    jenis_pengecekan = []
+                else:
+                    jenis_pengecekan = [str(jenis_pengecekan).strip()]
+
+            # ❌ Kalau ADA "nan" di dalam list, maka baris invalid
+            if any(str(j).strip().lower() == "nan" for j in jenis_pengecekan):
+                invalid_indexes.append(idx)
+
+        return invalid_indexes
+   
+    def find_suspicious_material_item(df):
+        suspicious_indexes = []
+        for idx, row in df.iterrows():
+            item = str(row.get("item_check", "")).strip().lower()
+            if "material" in item:
+                tokens = item.split()
+                if len(tokens) <= 3:
+                    suspicious_indexes.append(idx)
+        return suspicious_indexes
+    # ---------------------- validasi ----------------------
+
+    parsed_std = df_result.apply(parse_standard_value, axis=1)
+    df_result[["std_value", "std_min", "std_max"]] = parsed_std[["std_value", "std_min", "std_max"]]
+    df_result = fill_empty_catatan_from_group(df_result)
+    df_result = df_result.apply(move_m_from_standard_to_note, axis=1)
+
+    mask_diukur = df_result["jenis_point"].isin(["Dengan Ukur", "Dengan CMM"])
+    df_result.loc[mask_diukur, "standard"] = None
+    mask_tanpa_ukur = df_result["jenis_point"] == "Tanpa Ukur"
+    parsed_std.loc[mask_tanpa_ukur, ["std_value", "std_min", "std_max"]] = [None, None, None]
+    df_result[["std_value", "std_min", "std_max"]] = parsed_std[["std_value", "std_min", "std_max"]]
 
     df_result["jenis_point"] = df_result["jenis_point"].replace("Lainnya", np.nan).fillna(method="ffill")
     df_result["control_method"] = df_result["control_method"].replace(["", "nan", "None"], np.nan).fillna(method="ffill")
-    df_result["standard"] = df_result["standard"].replace(["", "nan", "None"], np.nan).fillna(method="ffill")
+   
+    df_result["standard_asli"] = df_result["standard"]
+    mask_diukur = df_result["jenis_point"].isin(["Dengan Ukur", "Dengan CMM"])
+    mask_tanpa_ukur = df_result["jenis_point"] == "Tanpa Ukur"
+    df_result.loc[mask_tanpa_ukur, "standard"] = df_result.loc[mask_tanpa_ukur, "standard_asli"]
+    df_result.drop(columns="standard_asli", inplace=True)
     df_result["point_check"] = df_result["point_check"].replace(["", " ", "nan", "None"], np.nan).fillna(method="ffill")
 
     df_result = clean_empty_rows(df_result)
     df_result = merge_point_item(df_result)
-    propagate_f_marker(df_result)
-
-    parsed_std = df_result.apply(parse_standard_value, axis=1)
-    df_result = df_result.apply(move_m_from_standard_to_note, axis=1)
-    df_result.loc[df_result["jenis_point"].isin(["Dengan Ukur", "Dengan CMM"]), "standard"] = None
-    mask_tanpa_ukur = df_result["jenis_point"] == "Tanpa Ukur"
-    parsed_std.loc[mask_tanpa_ukur, ["std_value", "std_min", "std_max"]] = [None, None, None]
-    df_result[["std_value", "std_min", "std_max"]] = parsed_std[["std_value", "std_min", "std_max"]]
-    mask_diukur = df_result["jenis_point"].isin(["Dengan Ukur", "Dengan CMM"])
-    df_result.loc[mask_diukur, "standard"] = None
     df_result = final_cleanup(df_result)
+ 
+    # 🚨 VALIDASI
+    df_result["status"] = "valid"
+    df_result.loc[find_exact_duplicates(df_result), "status"] = "duplikat"
+    df_result.loc[find_incomplete_duplicates(df_result), "status"] = "duplikat_parsing"
+    df_result.loc[find_invalid_format_rows(df_result), "status"] = "salah_format"
+    df_result.loc[find_mid_sequence_breaks(df_result), "status"] = "salah_format"
+    suspect_material = find_suspicious_material_item(df_result)
+    df_result.loc[suspect_material, "status"] = "salah_format"
+    # Hapus otomatis
+    df_result = df_result[df_result["status"] == "valid"].reset_index(drop=True)
 
     return df_result
 
 # ---------- Streamlit UI ----------
 
 st.set_page_config(page_title="Check Sheet QFORM", layout="wide")
-st.title("📄 CHECK SHEET SCAN QFORM")
+st.title("📄 DEBUG CHECK SHEET SCAN QFORM")
 
 uploaded_file = st.file_uploader("📤 Upload PDF file", type="pdf")
-
-def update_final_result(edited_df):
-    for idx, row in edited_df.iterrows():
-        qtime_checked = row["qtime"]
-        check100_checked = row["check_100"]
-
-        jenis_raw = row["edit_jenis_pengecekan"]
-        jenis_pengecekan = [v.strip() for v in str(jenis_raw).split(",") if v.strip()]
-        jenis_pengecekan = [re.sub(r"\s+", " ", v.strip()) for v in jenis_pengecekan]
-        if qtime_checked and "Qtime" not in jenis_pengecekan:
-            jenis_pengecekan.append("Qtime")
-        if check100_checked and "100%" not in jenis_pengecekan:
-            jenis_pengecekan.append("100%")
-
-        jenis_pengecekan = list(dict.fromkeys(jenis_pengecekan))
-        edited_df.at[idx, "jenis_pengecekan"] = jenis_pengecekan
 
 if uploaded_file:
     file_hash = get_file_hash(uploaded_file)
 
     if "last_file_hash" not in st.session_state or st.session_state.last_file_hash != file_hash:
         st.session_state.last_file_hash = file_hash
-        for key in ["df_final_data", "temp_edit", "show_updated_table"]:
+        for key in ["df_final_data", "st.session_state.df_final_data", "show_updated_table"]:
             st.session_state.pop(key, None)
         st.cache_data.clear()
 
@@ -874,108 +1451,42 @@ if uploaded_file:
 
             if "df_final_data" not in st.session_state:
                 st.session_state.df_final_data = transform_to_final_format(df_cleaned)
-
+# ---------------------- validasi --------------------------------------------------------------------
             # 🚨 Validasi status data (duplikat vs valid)
             df_validasi = st.session_state.df_final_data
             total = len(df_validasi)
             duplikat_count = (df_validasi["status"] == "duplikat").sum()
             suspect_count = (df_validasi["status"] == "duplikat_parsing").sum()
-            valid_count = total - duplikat_count - suspect_count
+            format_error_count = (df_validasi["status"] == "salah_format").sum()
+            valid_count = total - duplikat_count - suspect_count - format_error_count
 
             st.info(f"""
-            📊 **Validasi Baris**
+            📊 *Validasi Baris*
             - Total: {total}
             - 🟢 Valid: {valid_count}
             - 🟡 Duplikat normal: {duplikat_count}
             - 🟠 Dugaan parsing rusak: {suspect_count}
+            - ❌ Salah format: {format_error_count}
             """)
 
             if suspect_count > 0:
                 st.warning("⚠️ Ditemukan baris yang kemungkinan hasil merge/parsing tidak sempurna.")
-                if st.checkbox("🔍 Lihat baris parsing mencurigakan"):
-                    st.dataframe(df_validasi[df_validasi["status"] == "duplikat_parsing"])
 
-            # Tampilkan hanya baris mencurigakan (duplikat atau parsing error)
-            if "temp_edit" not in st.session_state:
-                st.session_state.temp_edit = st.session_state.df_final_data.copy()
-            if "show_updated_table" not in st.session_state:
-                st.session_state.show_updated_table = False
-
-            df_edit = st.session_state.temp_edit.copy()
-            df_edit.reset_index(inplace=True)
-
-            # Filter hanya baris mencurigakan
-            rows_to_delete = df_edit[df_edit["status"].isin(["duplikat", "duplikat_parsing"])]
-
-            if not rows_to_delete.empty:
-                st.warning(f"⚠️ Ditemukan {len(rows_to_delete)} baris mencurigakan (duplikat/parsing error).")
-
-                selected_rows = st.multiselect(
-                    "🔍 Pilih index baris mencurigakan untuk dihapus:",
-                    options=rows_to_delete["index"].tolist()
-                )
-
-                if st.button("🗑️ Hapus baris yang dipilih"):
-                    df_cleaned = df_edit[~df_edit["index"].isin(selected_rows)].drop(columns=["index"])
-                    st.session_state.temp_edit = df_cleaned.copy()
-                    st.session_state.df_final_data = df_cleaned.copy()
-                    st.success(f"✅ {len(selected_rows)} baris berhasil dihapus.")
-                    st.rerun()
-            # 🚨 Validasi status data (duplikat vs valid)
-
-            st.subheader("📊 Edit Final Structured Format")
-
-            temp_df = st.session_state.temp_edit.copy()
-            temp_df.reset_index(drop=True, inplace=True)
-            temp_df["edit_jenis_pengecekan"] = temp_df["jenis_pengecekan"].apply(
-                lambda x: ", ".join(x) if isinstance(x, list) else str(x)
-            )
-
-            edited_df = st.data_editor(
-                temp_df,
+            df_validasi = st.session_state.df_final_data
+            error_rows = df_validasi[df_validasi["status"].isin(["duplikat", "duplikat_parsing", "salah_format"])]
+            error_count = len(error_rows)
+            if error_count > 0:
+                st.warning(f"⚠️ Ditemukan {error_count} baris tidak valid (duplikat atau salah format). Data akan diabaikan saat ekspor.")
+# ---------------------- validasi ---------------------------------------------------------------------
+            st.subheader("📊 Final Format")
+            st.dataframe(
+                st.session_state.df_final_data.reset_index(drop=True),
                 use_container_width=True,
-                num_rows="dynamic",
-                hide_index=True,
-                key="editable_table"
+                hide_index=True
             )
-
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                if st.button("🔄 Update and Show Final"):
-                    update_final_result(edited_df)
-                    st.session_state.df_final_data = edited_df.copy()
-                    st.session_state.temp_edit = edited_df.copy()
-                    st.session_state.show_updated_table = True
-                    st.rerun()
-
-            if st.session_state.show_updated_table:
-                df_view = st.session_state.df_final_data.drop(
-                    columns=["qtime", "check_100", "edit_jenis_pengecekan"], errors="ignore"
-                )
-                st.subheader("👁️‍🗨️ Update View")
-                st.dataframe(df_view, use_container_width=True, hide_index=True)
-
-                if st.button("📤 Send to API"):
-                    df_to_send = st.session_state.df_final_data.drop(
-                        columns=["qtime", "check_100", "edit_jenis_pengecekan"], errors="ignore"
-                    )
-                    send_df_to_api(df_to_send)
-
-        df_to_download = st.session_state.df_final_data.drop(
-            columns=["qtime", "check_100", "edit_jenis_pengecekan"], errors="ignore"
-        )
-        excel_data = convert_df_to_excel(df_to_download)
-        if excel_data:
-            st.download_button(
-                label="💾 Download Excel",
-                data=excel_data,
-                file_name="output.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
             if st.button("♻️ Reset"):
                 st.cache_data.clear()
-                for key in ["df_final_data", "temp_edit", "show_updated_table", "last_file_hash"]:
+                for key in ["df_final_data", "st.session_state.df_final_data", "show_updated_table", "last_file_hash"]:
                     st.session_state.pop(key, None)
                 st.rerun()
 
@@ -983,3 +1494,21 @@ if uploaded_file:
         st.error(f"🔥 Error while processing the file:\n\n{e}")
         st.text("📄 Traceback log:")
         st.text(traceback.format_exc())
+
+# --- Endpoint API utama ----------------------------------------------------
+@app.route("/api/proses_file", methods=["POST"])
+def proses_file():
+    if 'file' not in request.files:
+        return jsonify({"error": "❌ Tidak ada file dikirim"}), 400
+
+    file = request.files['file']
+    try:
+        df_raw = extract_table_from_pdf(file)
+        df_clean = bersihkan_dataframe(df_raw)
+        df_final = transform_to_final_format(df_clean)
+        return jsonify(df_final.to_dict(orient="records"))
+    except Exception as e:
+        return jsonify({"error": f"🔥 Gagal proses file: {str(e)}"}), 500
+
+# if __name__ == "__main__":
+#     app.run(host="0.0.0.0", port=2051, debug=True)
