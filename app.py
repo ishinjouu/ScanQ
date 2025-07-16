@@ -220,10 +220,11 @@ def extract_table_from_pdf(file):
                         target_idx = 2
                         if not padded_row[target_idx] or str(padded_row[target_idx]).strip() == "":
                             for val in padded_row[5:10]:  # kolom 6-10 tempat biasanya 'a' atau 'b'
-                                if isinstance(val, str) and val.strip().isalpha() and len(val.strip()) == 1:
-                                    padded_row[target_idx] = val.strip()
+                                # if isinstance(val, str) and val.strip().isalpha() and len(val.strip()) == 1:
+                                val_clean = str(val).strip()
+                                if val_clean.isdigit():
+                                    padded_row[target_idx] = val_clean
                                     break
-
 
                         normalized_data.append(padded_row)
 
@@ -482,7 +483,7 @@ def fill_down_except_romawi(df, kolom_target):
             df.at[idx, kolom_target] = last_valid
     return df
 
-def gabungkan_kolom_item(df, kolom_Item='Standard'):
+def gabungkan_kolom_item(df, kolom_Item='Item'):
     if kolom_Item not in df.columns:
         st.warning(f"🛑 Kolom '{kolom_Item}' tidak ditemukan.")
         return df
@@ -607,33 +608,25 @@ def bersihkan_dataframe(df):
     def perbaiki_patrol_mentah(teks):
         if not isinstance(teks, str):
             return teks
+
+        # Normalisasi dasar
         teks = teks.lower()
-        teks = re.sub(r"\s+", " ", teks) 
-        teks = teks.strip()
-        if "tfihs" in teks and "x1" in teks:
-            return "Patrol 1x/Shift"
-        if "yad" in teks and "x1" in teks:
-            return "Patrol 1x/Day"
-        if "1x" in teks and "shift" in teks:
-            return "Patrol 1x/Shift"
-        if "1x" in teks and "day" in teks:
-            return "Patrol 1x/Day"
-        if "tfihs" in teks and "x2" in teks:
-            return "Patrol 1x/Shift"
-        if "yad" in teks and "x2" in teks:
-            return "Patrol 1x/Day"
-        if "2x" in teks and "shift" in teks:
-            return "Patrol 1x/Shift"
-        if "2x" in teks and "day" in teks:
-            return "Patrol 1x/Day"
-        if "tfihs" in teks and "x3" in teks:
-            return "Patrol 1x/Shift"
-        if "yad" in teks and "x3" in teks:
-            return "Patrol 1x/Day"
-        if "3x" in teks and "shift" in teks:
-            return "Patrol 1x/Shift"
-        if "3x" in teks and "day" in teks:
-            return "Patrol 1x/Day"
+        teks = re.sub(r"\s+", " ", teks).strip()
+        teks = teks.replace("/", " ")  # ubah '/' jadi spasi biar regex gampang
+
+        shift_synonyms = ["shift", "tfihs"]
+        day_synonyms = ["day", "yad"]
+
+        # Cari kombinasi x1 / x2 / x3 DAN kata shift/day (dalam bentuk apapun)
+        found_x = re.search(r"x\d+", teks)
+        if found_x:
+            for syn in shift_synonyms:
+                if syn in teks:
+                    return "Patrol 1x/Shift"
+            for syn in day_synonyms:
+                if syn in teks:
+                    return "Patrol 1x/Day"
+
         return teks
     try:
         if "No." in df.columns:
@@ -1131,7 +1124,7 @@ def transform_to_final_format(df):
         final_note = f"{original_note} {extracted_note}".strip() if extracted_note else original_note
 
         item_raw = row.get("Item", np.nan)
-        extra1 = row.get("_1", np.nan)
+        extra1 = row.get("_1", row.get("1", np.nan))
         extra2 = row.get("_2", row.get("2", np.nan))
         item = str(item_raw).strip() if pd.notna(item_raw) else ""
         extra1 = str(extra1).strip() if pd.notna(extra1) else ""
