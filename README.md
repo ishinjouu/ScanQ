@@ -3,7 +3,7 @@
 </h1>
 
 <p align="center">
-  <img src="https://res.cloudinary.com/jerrick/image/upload/c_scale,f_jpg,q_auto/64849811648956001c228262.jpg" width="300"/><br/>
+  <img src="https://giffiles.alphacoders.com/132/13267.gif" width="300"/><br/>
   <i>“Mati satu parsing, tumbuh seribu error.”</i><br/>
   <b>- Seorang Dev yang lelah</b>
 </p>
