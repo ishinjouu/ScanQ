@@ -3,9 +3,7 @@
 </h1>
 
 <p align="center">
-  <div style="text-align: center;">
-    <img src="https://giffiles.alphacoders.com/132/13267.gif" style="max-width: 100%; width: 500px; height: auto;" />
-  </div>
+  <img src="https://giffiles.alphacoders.com/132/13267.gif" style="max-width: 100%; width: 500px; height: auto;"/>
   <br/>
   <i>"In this world... even parsing tables means suffering."</i><br/>
   <b>— Kaneki, probably staring at broken PDFs</b>
