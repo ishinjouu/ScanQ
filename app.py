@@ -6,10 +6,6 @@ import hashlib
 import re
 import traceback
 from difflib import get_close_matches
-from io import BytesIO
-from openpyxl.utils import get_column_letter
-from openpyxl import load_workbook
-from openpyxl.styles import Alignment, Font
 from difflib import SequenceMatcher
 
 #---------------------- API --------------------------
