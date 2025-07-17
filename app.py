@@ -4,12 +4,8 @@ import pandas as pd
 import numpy as np
 import hashlib
 import re
-import requests
-import json
 import traceback
 from difflib import get_close_matches
-import pandas as pd
-from typing import List
 from io import BytesIO
 from openpyxl.utils import get_column_letter
 from openpyxl import load_workbook
@@ -117,49 +113,6 @@ def reverse_text(text):
     text = text.replace('\n', ' ')
     return text[::-1].strip()
 
-# convert data into excel
-def convert_df_to_excel(df):
-    if df is None or df.empty:
-        st.warning("⚠ Cleaned dataframe is empty or None. Skipping Excel export.")
-        return None
-    output = BytesIO()
-    try:
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Sheet1')
-        output.seek(0)
-        wb = load_workbook(output)
-        ws = wb.active
-        for col_idx, column_cells in enumerate(ws.columns, 1):
-            max_length = 0
-            col_letter = get_column_letter(col_idx)
-            col_name = column_cells[0].value
-            for row_idx, cell in enumerate(column_cells, 1):
-                try:
-                    if cell.value:
-                        max_length = max(max_length, len(str(cell.value)))
-                    if row_idx == 1:
-                        cell.font = Font(bold=True)
-                        cell.alignment = Alignment(horizontal='center', vertical='center')
-                    else:
-                        if col_name and str(col_name).strip().lower() == "section":
-                            cell.alignment = Alignment(horizontal='left', vertical='center')
-                        else:
-                            cell.alignment = Alignment(horizontal='center', vertical='center')
-                except:
-                    pass
-                
-            adjusted_width = max_length + 2
-            ws.column_dimensions[col_letter].width = adjusted_width
-        adjusted_output = BytesIO()
-        wb.save(adjusted_output)
-        adjusted_output.seek(0)
-        return adjusted_output
-
-    except Exception as e:
-        st.error(f"💥 Excel writing failed: {e}")
-        return None
-
-
 # ---------- PDF Table Extraction ----------
 
 def pisahkan_item_dan_extra(df):
@@ -172,51 +125,35 @@ def pisahkan_item_dan_extra(df):
 def extract_table_from_pdf(file):
     all_dataframes = []
     max_columns = 0
-
-
     with pdfplumber.open(file) as pdf:
         for page_num, page in enumerate(pdf.pages):
             tables = page.extract_tables()
             page_tables = []
-
-
+            # Log ALL RAW SCAN --------------------------------------------------------------//
             # st.write(f"📄 Halaman {page_num + 1}")
-
-
             # for table_idx, table in enumerate(tables):
             #     st.write(f"  ➤ Tabel {table_idx + 1} - Jumlah baris: {len(table)}")
             #     for i, row in enumerate(table):
             #         st.write(f"    Row {i}: {row}")
-
-
+            # Log ALL RAW SCAN --------------------------------------------------------------//
             for table_idx, table in enumerate(tables):
                 if not table or len(table) < 2:
                     continue
-
-
                 header_row_idx = None
                 for idx, row in enumerate(table):
                     if row and any("Item" in str(cell) for cell in row):
                         header_row_idx = idx
                         break
-
-
                 if header_row_idx is not None:
                     data = table[header_row_idx:]
                     expected_cols = 13
                     # header = [str(h).strip() if h is not None else "" for h in data[0]]
                     header = [deduplicate_words(str(h).strip()) if h is not None else "" for h in data[0]]
-
-
                     while len(header) < expected_cols:
                         header.append(f"Extra_{len(header)}")
-
-
                     normalized_data = []
                     for row in data[1:]:
                         padded_row = row + [""] * (len(header) - len(row))
-
-
                         target_idx = 2
                         if not padded_row[target_idx] or str(padded_row[target_idx]).strip() == "":
                             for val in padded_row[5:10]:  # kolom 6-10 tempat biasanya 'a' atau 'b'
@@ -225,9 +162,7 @@ def extract_table_from_pdf(file):
                                 if val_clean.isdigit():
                                     padded_row[target_idx] = val_clean
                                     break
-
                         normalized_data.append(padded_row)
-
 
                     seen = {}
                     new_header = []
@@ -238,25 +173,19 @@ def extract_table_from_pdf(file):
                         else:
                             seen[col] = 0
                             new_header.append(col)
-
-
                     df = pd.DataFrame(normalized_data, columns=new_header)
                     page_tables.append(df)
                 else:
                     df = pd.DataFrame(table)
                     page_tables.append(df)
-
                 df["page_number"] = page_num + 1
                 # page_tables.append(df)
-
-
             if page_tables:
                 try:
                     merged_df = pd.concat(page_tables, axis=0, ignore_index=True)
                     all_dataframes.append(merged_df)
                 except Exception as e:
                     st.warning(f"⚠️ Gagal merge tabel di halaman {page_num+1}: {e}")
-
 
     normalized_tables = []
     for df in all_dataframes:
@@ -265,23 +194,18 @@ def extract_table_from_pdf(file):
                 df[f"Extra_{i}"] = ""
         normalized_tables.append(df)
 
-
     return pd.concat(normalized_tables, ignore_index=True) if normalized_tables else pd.DataFrame()
-
 
 def merge_partial_rows(df, value_col="Standard", threshold=3):
     merged_rows = []
     buffer = None
-
     for _, row in df.iterrows():
         non_empty_cells = [str(v).strip() for v in row if str(v).strip().lower() not in ["", "none", "nan"]]
-        
         if str(row.get("Item", "")).strip():
             if buffer is not None:
                 merged_rows.append(buffer)
             buffer = row.copy()
         elif buffer is not None and len(non_empty_cells) <= threshold:
-            # Baris lanjutan dengan isi sangat sedikit
             existing_val = str(buffer.get(value_col, "")).strip()
             combined_val = ", ".join(filter(None, [existing_val] + non_empty_cells))
             buffer[value_col] = combined_val.strip(", ")
@@ -289,11 +213,10 @@ def merge_partial_rows(df, value_col="Standard", threshold=3):
             if buffer is not None:
                 merged_rows.append(buffer)
                 buffer = None
-            merged_rows.append(row)  # anggap baris baru
+            merged_rows.append(row)
     if buffer is not None:
         merged_rows.append(buffer)
     return pd.DataFrame(merged_rows)
-
 
 def group_rows_by_item(df):
     if "Item" not in df.columns or "Standard" not in df.columns:
@@ -322,14 +245,11 @@ def group_rows_by_item(df):
 
 def hapus_footer(df):
     keywords = ["keputusan", "keterangan", "approved", "checked", "disetujui", "diperiksa", "dibuat", "nama", "tanggal", "ttd"]
-    
     cleaned_pages = []
     unique_pages = df["page_number"].unique()
-
     for page in unique_pages:
         page_df = df[df["page_number"] == page].copy() 
         footer_start_idx = None
-
         for idx in page_df.index:
             row = page_df.loc[idx]
             row_str = ' '.join([str(x).lower() for x in row if pd.notnull(x)])
@@ -341,9 +261,7 @@ def hapus_footer(df):
             page_df = page_df.loc[:footer_start_idx - 1].copy()
         else:
             st.info("✅ No footer found.")
-
         cleaned_pages.append(page_df)
-    
     final_df = pd.concat(cleaned_pages, ignore_index=True)
     return final_df
 
@@ -372,7 +290,7 @@ def detect_and_fix_reversed_columns(df):
             return replacements[norm]
         else:
             return col_name.strip()
-        
+
     new_columns = [try_fix_header(col) for col in df.columns]
     df.columns = new_columns
     return df
@@ -653,15 +571,16 @@ def bersihkan_dataframe(df):
         if col in df.columns:
             df.drop(columns=[col], inplace=True)
     # cavity_columns = [col for col in df.columns if col.lower().startswith("cavity sample")]
-    cavity_columns = [col for col in df.columns if any(key in col.lower() for key in ("cavity", "sample"))]
+    cavity_columns = [col for col in df.columns if any(key in col.lower() for key in ("cavity", "sample"))]  
     if cavity_columns:
         df_cols = df.columns.tolist()
         first_cavity = cavity_columns[0]
         cavity_idx = df_cols.index(first_cavity)
         keep_cols = df_cols[:cavity_idx + 1]
         df = df[keep_cols]
-        if len(cavity_columns) > 1:
-            df.drop(columns=[col for col in cavity_columns[1:]], inplace=True)
+        drop_cols = [col for col in cavity_columns[1:] if col in df.columns]
+        if drop_cols:
+            df.drop(columns=drop_cols, inplace=True)
 
     if "Standard" in df.columns:
         df["Standard"] = df["Standard"].apply(normalisasi_m_notasi)
@@ -814,6 +733,7 @@ def copy_special_measurements_to_note(row):
         r"[Ø°]\d+(?:\.\d+)?\s*\(\s*\d+(?:\.\d+)?\s*~\s*[+−-]?\d+(?:\.\d+)?\s*\)",           # Ø6.1 ( 0 ~ +0.1 )
         r"[Ø°]\d+(?:\.\d+)?\s*\(\s*[+−-]?\d+(?:\.\d+)?\s*~\s*[+−-]?\d+(?:\.\d+)?\s*\)",     # Ø12.15 (-0.15 ~ +0.25)
         r"\d+(?:\.\d+)?º\s*±\s*\d+(?:\.\d+)?º",                                             # 15º ± 3º
+                r"\d{1,3}[°º]\s*±\s*\d{1,3}[°º]\s*\d{1,2}['′`´]"                            # 32° ± 1°30', 3
     ]
 
     ukuran_found = None
@@ -978,7 +898,7 @@ def parse_standard_value(row):
         upper = float(match14.group(3))
         return pd.Series([nominal, lower, upper], index=["std_value", "std_min", "std_max"])
     
-    # 15. Format: 15º ± 3º
+    # 15. 15º ± 3º
     match15 = re.match(r'^(\d+(?:\.\d+)?)\s*º?\s*[±+]\s*(\d+(?:\.\d+)?)\s*º?$', standard)
     if match15:
         value = float(match15.group(1))
@@ -993,7 +913,7 @@ def parse_standard_value(row):
         upper = float(match16.group(3))
         return pd.Series([nominal, lower, upper], index=["std_value", "std_min", "std_max"])
     
-    # 17. Format seperti "Reff. 0 ( -0.3 ~ 0 )" atau "Reff. 0 ( 0 ~ +0.5 )"
+    # 17. Reff. 0 ( -0.3 ~ 0 )" atau "Reff. 0 ( 0 ~ +0.5 )
     match17 = re.search(
         r'reff\.*\s*([+-]?\d+(?:[.,]\d+)?)\s*\(\s*([+-]?\d+(?:[.,]\d+)?)\s*~\s*([+-]?\d+(?:[.,]\d+)?)\s*\)',
         standard,
@@ -1004,6 +924,15 @@ def parse_standard_value(row):
         lower = float(match17.group(2).replace(",", "."))
         upper = float(match17.group(3).replace(",", "."))
         return pd.Series([nominal, lower, upper], index=["std_value", "std_min", "std_max"])
+    
+    # 18. 32° ± 1°30', 3
+    match18 = re.match(r"^(\d{1,3})[°º]?\s*±\s*(\d{1,3})[°º]?\s*(\d{1,2})['′`´]?", standard)
+    if match18:
+        std_value = int(match18.group(1))  # 32
+        derajat = re.sub(r"[^\d]", "", match18.group(2))  
+        menit = re.sub(r"[^\d]", "", match18.group(3))    
+        tolerance = float(f"{derajat}.{menit.zfill(2)}") 
+        return pd.Series([std_value, -tolerance, tolerance], index=["std_value", "std_min", "std_max"])
 
     return pd.Series([None, None, None], index=["std_value", "std_min", "std_max"])
 
@@ -1444,33 +1373,14 @@ if uploaded_file:
 
             if "df_final_data" not in st.session_state:
                 st.session_state.df_final_data = transform_to_final_format(df_cleaned)
-# ---------------------- validasi --------------------------------------------------------------------
-            # 🚨 Validasi status data (duplikat vs valid)
+
+            # 🚨 Validasi status data 
             df_validasi = st.session_state.df_final_data
             total = len(df_validasi)
-            duplikat_count = (df_validasi["status"] == "duplikat").sum()
-            suspect_count = (df_validasi["status"] == "duplikat_parsing").sum()
-            format_error_count = (df_validasi["status"] == "salah_format").sum()
-            valid_count = total - duplikat_count - suspect_count - format_error_count
-
             st.info(f"""
-            📊 *Validasi Baris*
-            - Total: {total}
-            - 🟢 Valid: {valid_count}
-            - 🟡 Duplikat normal: {duplikat_count}
-            - 🟠 Dugaan parsing rusak: {suspect_count}
-            - ❌ Salah format: {format_error_count}
+            - ✅ Total: {total}
             """)
 
-            if suspect_count > 0:
-                st.warning("⚠️ Ditemukan baris yang kemungkinan hasil merge/parsing tidak sempurna.")
-
-            df_validasi = st.session_state.df_final_data
-            error_rows = df_validasi[df_validasi["status"].isin(["duplikat", "duplikat_parsing", "salah_format"])]
-            error_count = len(error_rows)
-            if error_count > 0:
-                st.warning(f"⚠️ Ditemukan {error_count} baris tidak valid (duplikat atau salah format). Data akan diabaikan saat ekspor.")
-# ---------------------- validasi ---------------------------------------------------------------------
             st.subheader("📊 Final Format")
             st.dataframe(
                 st.session_state.df_final_data.reset_index(drop=True),
@@ -1488,7 +1398,7 @@ if uploaded_file:
         st.text("📄 Traceback log:")
         st.text(traceback.format_exc())
 
-# --- Endpoint API utama ----------------------------------------------------
+# --- Endpoint API utama ----------------------------------------------------//
 @app.route("/api/proses_file", methods=["POST"])
 def proses_file():
     if 'file' not in request.files:
@@ -1502,6 +1412,4 @@ def proses_file():
         return jsonify(df_final.to_dict(orient="records"))
     except Exception as e:
         return jsonify({"error": f"🔥 Gagal proses file: {str(e)}"}), 500
-
-# if __name__ == "__main__":
-#     app.run(host="0.0.0.0", port=2051, debug=True)
+# --- Endpoint API utama ----------------------------------------------------//
