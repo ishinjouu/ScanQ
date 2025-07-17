@@ -128,15 +128,11 @@ def extract_table_from_pdf(file):
             tables = page.extract_tables()
             page_tables = []
 
-
             # st.write(f"📄 Halaman {page_num + 1}")
-
-
             # for table_idx, table in enumerate(tables):
             #     st.write(f"  ➤ Tabel {table_idx + 1} - Jumlah baris: {len(table)}")
             #     for i, row in enumerate(table):
             #         st.write(f"    Row {i}: {row}")
-
 
             for table_idx, table in enumerate(tables):
                 if not table or len(table) < 2:
@@ -516,24 +512,34 @@ def normalisasi_patrol(patrol_input):
     return ", ".join(sorted(hasil))
 
 # label bolong b. dll
-def isi_label_abjad_di_antara(df, kolom='Item', No='No.'):
-    pola = re.compile(r'^([a-zA-Z])\.\s*(.+)$')
+def isi_label_abjad_di_antara(df, kolom='Item', no_kolom='No.'):
     new_items = []
-    last_label = None
-    for i in range(len(df)):
-        if pd.notna(df.at[i, No]):
-            last_label = None
+    last_prefix = None
+    last_no = None
 
+    pola_prefix = re.compile(r'^([a-zA-Z])\.\s*(.*)$')
+
+    for i in range(len(df)):
         item = str(df.at[i, kolom]).strip()
-        match = pola.match(item)
+        current_no = df.at[i, no_kolom]
+
+        match = pola_prefix.match(item)
+
         if match:
-            last_label = match.group(1)
-            new_items.append(item)
+            # Kalau nemu label huruf baru
+            last_prefix = match.group(1)
+            sisa = match.group(2)
+            last_no = current_no
+            new_items.append(f"{last_prefix}. {sisa}")
         else:
-            if last_label:
-                new_items.append(f"{last_label}. {item}")
+            # Kalau baris ga ada prefix huruf
+            if current_no == last_no and last_prefix:
+                new_items.append(f"{last_prefix}. {item}")
             else:
+                last_prefix = None
+                last_no = current_no
                 new_items.append(item)
+
     df[kolom] = new_items
     return df
 
@@ -1411,33 +1417,14 @@ if uploaded_file:
 
             if "df_final_data" not in st.session_state:
                 st.session_state.df_final_data = transform_to_final_format(df_cleaned)
-# ---------------------- validasi --------------------------------------------------------------------
-            # 🚨 Validasi status data (duplikat vs valid)
+
+            # 🚨 Validasi status data 
             df_validasi = st.session_state.df_final_data
             total = len(df_validasi)
-            duplikat_count = (df_validasi["status"] == "duplikat").sum()
-            suspect_count = (df_validasi["status"] == "duplikat_parsing").sum()
-            format_error_count = (df_validasi["status"] == "salah_format").sum()
-            valid_count = total - duplikat_count - suspect_count - format_error_count
-
             st.info(f"""
-            📊 *Validasi Baris*
-            - Total: {total}
-            - 🟢 Valid: {valid_count}
-            - 🟡 Duplikat normal: {duplikat_count}
-            - 🟠 Dugaan parsing rusak: {suspect_count}
-            - ❌ Salah format: {format_error_count}
+            - ✅ Total: {total}
             """)
 
-            if suspect_count > 0:
-                st.warning("⚠️ Ditemukan baris yang kemungkinan hasil merge/parsing tidak sempurna.")
-
-            df_validasi = st.session_state.df_final_data
-            error_rows = df_validasi[df_validasi["status"].isin(["duplikat", "duplikat_parsing", "salah_format"])]
-            error_count = len(error_rows)
-            if error_count > 0:
-                st.warning(f"⚠️ Ditemukan {error_count} baris tidak valid (duplikat atau salah format). Data akan diabaikan saat ekspor.")
-# ---------------------- validasi ---------------------------------------------------------------------
             st.subheader("📊 Final Format")
             st.dataframe(
                 st.session_state.df_final_data.reset_index(drop=True),
@@ -1455,7 +1442,7 @@ if uploaded_file:
         st.text("📄 Traceback log:")
         st.text(traceback.format_exc())
 
-# --- Endpoint API utama ----------------------------------------------------
+# --- Endpoint API utama ----------------------------------------------------//
 @app.route("/api/proses_file", methods=["POST"])
 def proses_file():
     if 'file' not in request.files:
@@ -1469,6 +1456,4 @@ def proses_file():
         return jsonify(df_final.to_dict(orient="records"))
     except Exception as e:
         return jsonify({"error": f"🔥 Gagal proses file: {str(e)}"}), 500
-
-# if __name__ == "__main__":
-#     app.run(host="0.0.0.0", port=2051, debug=True)
+# --- Endpoint API utama ----------------------------------------------------//
