@@ -863,8 +863,8 @@ def parse_standard_value(row):
         delta = float(match4.group(2))
         return pd.Series([nominal, -delta, delta], index=["std_value", "std_min", "std_max"])
 
-    # 5. Min/Max
-    match5 = re.search(r'\b(Min|Max)\s*(\d+(?:\.\d+)?)\b', standard, re.IGNORECASE)
+    # 5. Min/Max (support titik setelah Min./Max.)
+    match5 = re.search(r'\b(Min|Max)\.?\s*(\d+(?:\.\d+)?)\b', standard, re.IGNORECASE)
     if match5:
         kind = match5.group(1).lower()
         value = float(match5.group(2))
