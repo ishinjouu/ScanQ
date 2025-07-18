@@ -764,7 +764,8 @@ def copy_special_measurements_to_note(row):
     if jenis_point not in ["Dengan Ukur", "Dengan CMM"]:
         return row
 
-    min_max_match = re.search(r"\b([Mm]in|[Mm]ax)\s*\d+(?:\.\d+)?", standard)
+    standard_normalized = re.sub(r"\b([Mm]in|[Mm]ax)\.", r"\1", standard)
+    min_max_match = re.search(r"\b([Mm]in|[Mm]ax)\s*\d+(?:\.\d+)?", standard_normalized)
     if min_max_match:
         tag = f"[{min_max_match.group(0).strip()}]"
         if tag not in catatan:
