@@ -968,7 +968,7 @@ def parse_standard_value(row):
         upper = float(match17.group(3).replace(",", "."))
         return pd.Series([nominal, lower, upper], index=["std_value", "std_min", "std_max"])
     
-        # 18. 32° ± 1°30', 3
+    # 18. 32° ± 1°30', 3
     match18 = re.match(r"^(\d{1,3})[°º]?\s*±\s*(\d{1,3})[°º]?\s*(\d{1,2})['′`´]?", standard)
     if match18:
         std_value = int(match18.group(1))  # 32
@@ -976,10 +976,16 @@ def parse_standard_value(row):
         menit = re.sub(r"[^\d]", "", match18.group(3))    
         tolerance = float(f"{derajat}.{menit.zfill(2)}") 
         return pd.Series([std_value, -tolerance, tolerance], index=["std_value", "std_min", "std_max"])
-
-    return pd.Series([None, None, None], index=["std_value", "std_min", "std_max"])
-
     
+    # 19. 8 ( 0 / +0.4 )
+    match19 = re.match(r"^(\d+(?:\.\d+)?)\s*\(\s*([+-]?\d+(?:\.\d+)?)\s*/\s*([+-]?\d+(?:\.\d+)?)\s*\)", standard)
+    if match19:
+        std_value = float(match19.group(1))  # 8
+        std_min = float(match19.group(2))    # 0
+        std_max = float(match19.group(3))    # +0.4
+        return pd.Series([std_value, std_min, std_max], index=["std_value", "std_min", "std_max"])
+
+    return pd.Series([None, None, None], index=["std_value", "std_min", "std_max"])    
 
 def fill_empty_catatan_from_group(df):
     df = df.copy()
@@ -1387,7 +1393,7 @@ def transform_to_final_format(df):
     suspect_material = find_suspicious_material_item(df_result)
     df_result.loc[suspect_material, "status"] = "salah_format"
     # Hapus otomatis
-    # df_result = df_result[df_result["status"] == "valid"].reset_index(drop=True)
+    df_result = df_result[df_result["status"] == "valid"].reset_index(drop=True)
 
     return df_result
 
