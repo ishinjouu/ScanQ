@@ -226,9 +226,12 @@ def merge_partial_rows(df, value_col="Standard", threshold=3):
                 merged_rows.append(buffer)
             buffer = row.copy()
         elif buffer is not None and len(non_empty_cells) <= threshold:
-            # Baris lanjutan dengan isi sangat sedikit
             existing_val = str(buffer.get(value_col, "")).strip()
-            combined_val = ", ".join(filter(None, [existing_val] + non_empty_cells))
+
+            # Filter out purely numeric values from continuation
+            non_numeric = [v for v in non_empty_cells if not v.strip().isdigit()]
+            
+            combined_val = ", ".join(filter(None, [existing_val] + non_numeric))
             buffer[value_col] = combined_val.strip(", ")
         else:
             if buffer is not None:
