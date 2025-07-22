@@ -784,6 +784,7 @@ def copy_special_measurements_to_note(row):
         r"[Ø°]\d+(?:\.\d+)?\s*\(\s*[+−-]?\d+(?:\.\d+)?\s*~\s*[+−-]?\d+(?:\.\d+)?\s*\)",     # Ø12.15 (-0.15 ~ +0.25)
         r"\d+(?:\.\d+)?º\s*±\s*\d+(?:\.\d+)?º",                                             # 15º ± 3º
         r"\d{1,3}[°º]\s*±\s*\d{1,3}[°º]\s*\d{1,2}['′`´]"                                    # 32° ± 1°30', 3
+        r"^0(?:\.0+)?\s*\(\s*Reff\s*\)$"                                                    # 0 (Reff)  
     ]
 
     ukuran_found = None
@@ -990,6 +991,12 @@ def parse_standard_value(row):
         std_value = float(match19.group(1))  # 8
         std_min = float(match19.group(2))    # 0
         std_max = float(match19.group(3))    # +0.4
+        return pd.Series([std_value, std_min, std_max], index=["std_value", "std_min", "std_max"])
+
+    # 20. 0 (Reff) atau 0 ( Reff )
+    match20 = re.match(r"^0\s*\(\s*Reff\s*\)$", standard, re.IGNORECASE)
+    if match20:
+        std_value = std_min = std_max = 0.0
         return pd.Series([std_value, std_min, std_max], index=["std_value", "std_min", "std_max"])
 
     return pd.Series([None, None, None], index=["std_value", "std_min", "std_max"])    
