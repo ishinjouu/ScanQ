@@ -516,11 +516,14 @@ def normalisasi_patrol(patrol_input):
 
 # label bolong b. dll
 def isi_label_abjad_di_antara(df, kolom='Item', no_kolom='No.'):
+    import re
+
     new_items = []
     last_prefix = None
     last_no = None
 
-    pola_prefix = re.compile(r'^([a-zA-Z])\.\s*(.*)$')
+    pola_prefix = re.compile(r'^([a-zA-Z])\.\s+(.*)$')  # only allow x letter followed by ". " and some text
+    pola_prefix_any = re.compile(r'^[a-zA-Z]\.')  # detect even malformed prefixes like "x.Something"
 
     for i in range(len(df)):
         item = str(df.at[i, kolom]).strip()
@@ -529,16 +532,17 @@ def isi_label_abjad_di_antara(df, kolom='Item', no_kolom='No.'):
         match = pola_prefix.match(item)
 
         if match:
-            # Kalau nemu label huruf baru
+            # Valid new prefix found
             last_prefix = match.group(1)
             sisa = match.group(2)
             last_no = current_no
             new_items.append(f"{last_prefix}. {sisa}")
         else:
-            # Kalau baris ga ada prefix huruf
-            if current_no == last_no and last_prefix:
+            if current_no == last_no and last_prefix and not pola_prefix_any.match(item):
+                # Only prepend if this line doesn't look like it has any prefix
                 new_items.append(f"{last_prefix}. {item}")
             else:
+                # Reset if it looks like a new section or malformed
                 last_prefix = None
                 last_no = current_no
                 new_items.append(item)
