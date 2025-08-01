@@ -3,10 +3,10 @@
 </h1>
 
 <p align="center">
-  <img src="https://giffiles.alphacoders.com/132/13267.gif" style="max-width: 100%; width: 500px; height: auto;"/>
+  <img src="https://www.google.com/url?sa=i&url=https%3A%2F%2Fgifer.com%2Fen%2F373l&psig=AOvVaw2dzvHsI7m6ObIKSoIw6NJ8&ust=1754121222125000&source=images&cd=vfe&opi=89978449&ved=0CBQQjRxqFwoTCMD17vmQ6Y4DFQAAAAAdAAAAABAe" style="max-width: 100%; width: 500px; height: auto;"/>
   <br/>
   <i>"In this world... even parsing tables means suffering."</i><br/>
-  <b>Kaneki, no kin to fragile PDFs that beg and freeze</b>
+  <b>Nagisa, no kin to fragile PDFs that beg and freeze</b>
 </p>
 
 ---
