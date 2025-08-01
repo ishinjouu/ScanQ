@@ -1030,6 +1030,13 @@ def parse_standard_value(row):
         value = float(match22.group(1))  
         return pd.Series([0, 0, value], index=["std_value", "std_min", "std_max"])
 
+    # 23. 5 [±2]
+    match23 = re.match(r'^\s*(\d+(?:\.\d+)?)\s*\[\s*±\s*([+−-]?\d+(?:\.\d+)?)\s*\]\s*$', standard)
+    if match23:
+        nominal = float(match23.group(1))
+        delta = float(match23.group(2).replace("−", "-"))
+        return pd.Series([nominal, -abs(delta), abs(delta)], index=["std_value", "std_min", "std_max"])
+
     return pd.Series([None, None, None], index=["std_value", "std_min", "std_max"])    
 
 def fill_empty_catatan_from_group(df):
