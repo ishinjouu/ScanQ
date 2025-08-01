@@ -484,14 +484,13 @@ def fill_item(df, kolom_item='Item', kolom_standard='Standard'):
 
 def normalisasi_patrol(patrol_input):
     if not isinstance(patrol_input, str):
-        return ""    
-    teks = patrol_input.lower().strip()
-    teks_nospasi = re.sub(r"\s+", "", teks)
+        return ""
+    teks = patrol_input.lower().replace("\n", " ").replace("\r", " ").strip()
     mapping = {
         "Patrol 1x/Shift": [
             "1x/shift", "shift/1x", "1 shift", "x1/shift", "1x shift", "x1 / shift", "shift x1",
             "tfihs / x1", "x1 / tfihs", "tfihs/1x", "1x / tfihs", "tfihs x1",
-            "tfihs / x1 tfihs / x1", "tfihs / x1 tfihs / x1 tfihs / x1", "1x / shift", "1x   shift", "tfih s   x1"
+            "tfihs / x1 tfihs / x1", "tfihs / x1 tfihs / x1 tfihs / x1", "1x / shift", "1x   shift"
         ],
         "Patrol 1x/Day": [
             "1x/day", "day/1x", "1 day", "1x per day", "per day", "yad/x1", "x1/yad", "1x   day"
@@ -500,8 +499,7 @@ def normalisasi_patrol(patrol_input):
     hasil = set()
     for kategori, variasi_list in mapping.items():
         for variasi in variasi_list:
-            variasi_nospasi = re.sub(r"\s+", "", variasi.lower())
-            if variasi_nospasi in teks_nospasi:
+            if variasi in teks:
                 hasil.add(kategori)
     return ", ".join(sorted(hasil))
 
@@ -614,7 +612,6 @@ def bersihkan_dataframe(df):
 
         # === Default: kembalikan teks asli kalau gak ketemu pattern ===
         return teks_raw
-
     try:
         if "No." in df.columns:
             df["No."] = df["No."].astype(str).str.replace(r'^(\d+)\s*(\w*)\.*', r'\1\2', regex=True)
@@ -820,7 +817,6 @@ def copy_special_measurements_to_note(row):
         r"\[?[Ø°]\d+(?:\.\d+)?\s*\[\s*[+−-]?\d+(?:\.\d+)?\s*~\s*[+−-]?\d+(?:\.\d+)?\s*\]",         # [Ø5.5 [-0.3 ~ 0]
         r"[Ø°]\d+(?:\.\d+)?\s*\(\s*[+-−]?\d+(?:\.\d+)?\s*~\s*[+-−+]?\d+(?:\.\d+)?\s*[\)\]]",       #[Ø6.5 (0 ~ +0.4]
         r"\b[Mm]ax\s*Rz\s*\d+(?:\.\d+)?",                                                          # Max Rz 25    
-        r"\d{1,2}[°º]\s*\d{1,2}['′`´]?\s*(?:max|min)",                                             # 1°30' max / min
     ]
 
     ukuran_found = None
@@ -890,14 +886,6 @@ def parse_standard_value(row):
         std_min = float(match_reff.group(1))
         std_max = float(match_reff.group(2))
         return pd.Series([std_value, std_min, std_max], index=["std_value", "std_min", "std_max"]) 
-    
-    # --- Tambahan: Deteksi pola Reff: 0 ( 0 ~ +X mm ) di mana saja ---
-    match_reff_mm = re.search(r'Reff\s*:\s*0\s*\(\s*0\s*~\s*\+?(\d+(?:\.\d+)?)\s*mm\s*\)', standard, re.IGNORECASE)
-    if match_reff_mm:
-        std_value = 0.0
-        std_min = 0.0
-        std_max = float(match_reff_mm.group(1))
-        return pd.Series([std_value, std_min, std_max], index=["std_value", "std_min", "std_max"])
 
     # 1. 0 ±0.2
     match1 = re.search(r'(\d+(?:\.\d+)?)\s*±\s*(\d+(?:\.\d+)?)', standard)
@@ -1077,25 +1065,6 @@ def parse_standard_value(row):
         nominal = float(match23.group(1))
         delta = float(match23.group(2).replace("−", "-"))
         return pd.Series([nominal, -abs(delta), abs(delta)], index=["std_value", "std_min", "std_max"])
-    
-    # 24. 0 ( 0 ~ +0.5 mm )
-    match24 = re.match(r'^0\s*\(\s*0\s*~\s*\+?(\d+(?:\.\d+)?)\s*mm\s*\)$', standard, re.IGNORECASE)
-    if match24:
-        std_value = 0.0
-        std_min = 0.0
-        std_max = float(match24.group(1))
-        return pd.Series([std_value, std_min, std_max], index=["std_value", "std_min", "std_max"])
-    
-    # 25. 1°30' max / min
-    match25 = re.match(r"^(\d{1,2})[°º]\s*(\d{1,2})['′`´]?\s*(max|min)$", standard, re.IGNORECASE)
-    if match25:
-        derajat = int(match25.group(1))
-        menit = int(match25.group(2))
-        val = float(f"{derajat}.{str(menit).zfill(2)}")
-        if match25.group(3).lower() == "max":
-            return pd.Series([0, 0, val], index=["std_value", "std_min", "std_max"])
-        else:
-            return pd.Series([0, val, 0], index=["std_value", "std_min", "std_max"])
 
     return pd.Series([None, None, None], index=["std_value", "std_min", "std_max"])    
 
@@ -1228,7 +1197,41 @@ def find_mid_sequence_breaks(df):
     return suspicious_indexes
 
     # ----------- Validsi -----------
-# ------------ Transform To Final Format -----------------------------------//
+def sinkronisasi_section_cmm(df):
+    """
+    Untuk setiap baris CMM, section-nya mengikuti section dari baris non-CMM
+    dengan point_check yang sama, atau jika tidak ada, yang urutannya tepat di atasnya.
+    """
+    df = df.copy()
+    # Pastikan point_check bisa diurutkan
+    def get_point_number(val):
+        # Ambil angka di depan, misal 1, 2, 3, 1a, 1b -> 1, 2, 3, 1, 1
+        m = re.match(r"^(\d+)", str(val))
+        return int(m.group(1)) if m else -1
+
+    # Buat dataframe non-CMM yang sudah diurutkan
+    non_cmm = df[df["jenis_point"] != "Dengan CMM"].copy()
+    non_cmm["point_num"] = non_cmm["point_check"].apply(get_point_number)
+    non_cmm = non_cmm.sort_values("point_num")
+
+    def find_section_for_cmm(row):
+        if row["jenis_point"] != "Dengan CMM":
+            return row["section"]
+        point_num = get_point_number(row["point_check"])
+        # Cari yang sama
+        same = non_cmm[non_cmm["point_num"] == point_num]
+        if not same.empty:
+            return same.iloc[0]["section"]
+        # Kalau tidak ada, cari yang urutannya tepat di atas
+        before = non_cmm[non_cmm["point_num"] < point_num]
+        if not before.empty:
+            return before.iloc[-1]["section"]
+        # Kalau tidak ada juga, biarkan apa adanya
+        return row["section"]
+
+    df["section"] = df.apply(find_section_for_cmm, axis=1)
+    return df
+
 def transform_to_final_format(df):
     df.columns = [col.strip().replace('\n', ' ').title() for col in df.columns]
     if "Control Method" not in df.columns:
@@ -1576,6 +1579,7 @@ def transform_to_final_format(df):
     df_result = clean_empty_rows(df_result)
     df_result = merge_point_item(df_result)
     df_result = final_cleanup(df_result)
+    df_result = sinkronisasi_section_cmm(df_result)
  
     # 🚨 VALIDASI
     df_result["status"] = "valid"
