@@ -259,7 +259,6 @@ def group_rows_by_item(df):
 
 def hapus_footer(df):
     keywords = ["keputusan", "keterangan", "approved", "checked", "disetujui", "diperiksa", "dibuat", "nama", "ttd"]
-    # keywords = ["keputusan"]
     
     cleaned_pages = []
     unique_pages = df["page_number"].unique()
@@ -485,13 +484,14 @@ def fill_item(df, kolom_item='Item', kolom_standard='Standard'):
 
 def normalisasi_patrol(patrol_input):
     if not isinstance(patrol_input, str):
-        return ""
-    teks = patrol_input.lower().replace("\n", " ").replace("\r", " ").strip()
+        return ""    
+    teks = patrol_input.lower().strip()
+    teks_nospasi = re.sub(r"\s+", "", teks)
     mapping = {
         "Patrol 1x/Shift": [
             "1x/shift", "shift/1x", "1 shift", "x1/shift", "1x shift", "x1 / shift", "shift x1",
             "tfihs / x1", "x1 / tfihs", "tfihs/1x", "1x / tfihs", "tfihs x1",
-            "tfihs / x1 tfihs / x1", "tfihs / x1 tfihs / x1 tfihs / x1", "1x / shift", "1x   shift"
+            "tfihs / x1 tfihs / x1", "tfihs / x1 tfihs / x1 tfihs / x1", "1x / shift", "1x   shift", "tfih s   x1"
         ],
         "Patrol 1x/Day": [
             "1x/day", "day/1x", "1 day", "1x per day", "per day", "yad/x1", "x1/yad", "1x   day"
@@ -500,7 +500,8 @@ def normalisasi_patrol(patrol_input):
     hasil = set()
     for kategori, variasi_list in mapping.items():
         for variasi in variasi_list:
-            if variasi in teks:
+            variasi_nospasi = re.sub(r"\s+", "", variasi.lower())
+            if variasi_nospasi in teks_nospasi:
                 hasil.add(kategori)
     return ", ".join(sorted(hasil))
 
@@ -562,43 +563,58 @@ def bersihkan_dataframe(df):
             return teks
 
         # Normalisasi dasar
+        teks_raw = teks
         teks = teks.lower()
         teks = re.sub(r"\s+", " ", teks).strip()
         teks = teks.replace("/", " ")  # ubah '/' jadi spasi biar regex gampang
+        teks_nospasi = re.sub(r"\s+", "", teks)
 
         shift_synonyms = ["shift", "tfihs"]
         day_synonyms = ["day", "yad"]
 
-        # === Gabungan: 1x shift & 1x day (dalam urutan apa pun) ===
+        # === Gabungan: 1x shift & 1x day (urutan bebas) ===
         shift_pattern = r"(?:shift|tfihs)"
         day_pattern = r"(?:day|yad)"
-        combined_pattern = rf"(1x\s*{shift_pattern}\s*&\s*1x\s*{day_pattern})|(1x\s*{day_pattern}\s*&\s*1x\s*{shift_pattern})"
-        combined_pattern2 = rf"(1 pcs\s*{shift_pattern}\s*&\s*1 pcs\s*{day_pattern})|(1 pcs\s*{day_pattern}\s*&\s*1 pcs\s*{shift_pattern})"
+        combined_pattern = rf"(?:1x\s*{shift_pattern}\s*&\s*1x\s*{day_pattern})|(?:1x\s*{day_pattern}\s*&\s*1x\s*{shift_pattern})"
+        combined_pattern2 = rf"(?:1\s*pcs\s*{shift_pattern}\s*&\s*1\s*pcs\s*{day_pattern})|(?:1\s*pcs\s*{day_pattern}\s*&\s*1\s*pcs\s*{shift_pattern})"
+        
         if re.search(combined_pattern, teks):
             return "Patrol 1x/Shift & 1x/Day"
-
-        # === Kasus umum: x1 atau 1x dengan shift/day dalam urutan dan spasi bebas ===
-        for syn in shift_synonyms:
-            if re.search(rf"(?:x1|1x)\s*{syn}|{syn}\s*(?:x1|1x)", teks):
-                return "Patrol 1x/Shift"
-        for syn in day_synonyms:
-            if re.search(rf"(?:x1|1x)\s*{syn}|{syn}\s*(?:x1|1x)", teks):
-                return "Patrol 1x/Day"
-            
-            # /////
-            
         if re.search(combined_pattern2, teks):
             return "Patrol 1x/Shift & 1x/Day"
 
-        # === Kasus umum: scp 1 atau 1 pcs dengan shift/day dalam urutan dan spasi bebas ===
+        # === Kasus umum: x1/1x + shift/day (urutan bebas & spasi bebas) ===
         for syn in shift_synonyms:
-            if re.search(rf"(?:sc 1|1 pcs)\s*{syn}|{syn}\s*(?:scp 1|1 pcs)", teks):
+            if re.search(rf"(?:x1|1x)\s*{syn}|{syn}\s*(?:x1|1x)", teks):
                 return "Patrol 1x/Shift"
+            # versi tanpa spasi
+            if re.search(rf"(?:x1|1x){syn}|{syn}(?:x1|1x)", teks_nospasi):
+                return "Patrol 1x/Shift"
+
         for syn in day_synonyms:
-            if re.search(rf"(?:psc 1|1 pcs)\s*{syn}|{syn}\s*(?:scp 1|1 pcs)", teks):
+            if re.search(rf"(?:x1|1x)\s*{syn}|{syn}\s*(?:x1|1x)", teks):
+                return "Patrol 1x/Day"
+            if re.search(rf"(?:x1|1x){syn}|{syn}(?:x1|1x)", teks_nospasi):
                 return "Patrol 1x/Day"
 
-        return teks
+        # === Kasus pcs 1 / scp 1 / psc 1 + shift/day ===
+        pcs_pattern = r"(?:1\s*pcs|scp\s*1|psc\s*1)"
+        pcs_pattern_nospasi = r"(?:1pcs|scp1|psc1)"
+        for syn in shift_synonyms:
+            if re.search(rf"{pcs_pattern}\s*{syn}|{syn}\s*{pcs_pattern}", teks):
+                return "Patrol 1x/Shift"
+            if re.search(rf"{pcs_pattern_nospasi}{syn}|{syn}{pcs_pattern_nospasi}", teks_nospasi):
+                return "Patrol 1x/Shift"
+
+        for syn in day_synonyms:
+            if re.search(rf"{pcs_pattern}\s*{syn}|{syn}\s*{pcs_pattern}", teks):
+                return "Patrol 1x/Day"
+            if re.search(rf"{pcs_pattern_nospasi}{syn}|{syn}{pcs_pattern_nospasi}", teks_nospasi):
+                return "Patrol 1x/Day"
+
+        # === Default: kembalikan teks asli kalau gak ketemu pattern ===
+        return teks_raw
+
     try:
         if "No." in df.columns:
             df["No."] = df["No."].astype(str).str.replace(r'^(\d+)\s*(\w*)\.*', r'\1\2', regex=True)
@@ -804,6 +820,7 @@ def copy_special_measurements_to_note(row):
         r"\[?[Ø°]\d+(?:\.\d+)?\s*\[\s*[+−-]?\d+(?:\.\d+)?\s*~\s*[+−-]?\d+(?:\.\d+)?\s*\]",         # [Ø5.5 [-0.3 ~ 0]
         r"[Ø°]\d+(?:\.\d+)?\s*\(\s*[+-−]?\d+(?:\.\d+)?\s*~\s*[+-−+]?\d+(?:\.\d+)?\s*[\)\]]",       #[Ø6.5 (0 ~ +0.4]
         r"\b[Mm]ax\s*Rz\s*\d+(?:\.\d+)?",                                                          # Max Rz 25    
+        r"\d{1,2}[°º]\s*\d{1,2}['′`´]?\s*(?:max|min)",                                             # 1°30' max / min
     ]
 
     ukuran_found = None
@@ -873,6 +890,14 @@ def parse_standard_value(row):
         std_min = float(match_reff.group(1))
         std_max = float(match_reff.group(2))
         return pd.Series([std_value, std_min, std_max], index=["std_value", "std_min", "std_max"]) 
+    
+    # --- Tambahan: Deteksi pola Reff: 0 ( 0 ~ +X mm ) di mana saja ---
+    match_reff_mm = re.search(r'Reff\s*:\s*0\s*\(\s*0\s*~\s*\+?(\d+(?:\.\d+)?)\s*mm\s*\)', standard, re.IGNORECASE)
+    if match_reff_mm:
+        std_value = 0.0
+        std_min = 0.0
+        std_max = float(match_reff_mm.group(1))
+        return pd.Series([std_value, std_min, std_max], index=["std_value", "std_min", "std_max"])
 
     # 1. 0 ±0.2
     match1 = re.search(r'(\d+(?:\.\d+)?)\s*±\s*(\d+(?:\.\d+)?)', standard)
@@ -1052,6 +1077,25 @@ def parse_standard_value(row):
         nominal = float(match23.group(1))
         delta = float(match23.group(2).replace("−", "-"))
         return pd.Series([nominal, -abs(delta), abs(delta)], index=["std_value", "std_min", "std_max"])
+    
+    # 24. 0 ( 0 ~ +0.5 mm )
+    match24 = re.match(r'^0\s*\(\s*0\s*~\s*\+?(\d+(?:\.\d+)?)\s*mm\s*\)$', standard, re.IGNORECASE)
+    if match24:
+        std_value = 0.0
+        std_min = 0.0
+        std_max = float(match24.group(1))
+        return pd.Series([std_value, std_min, std_max], index=["std_value", "std_min", "std_max"])
+    
+    # 25. 1°30' max / min
+    match25 = re.match(r"^(\d{1,2})[°º]\s*(\d{1,2})['′`´]?\s*(max|min)$", standard, re.IGNORECASE)
+    if match25:
+        derajat = int(match25.group(1))
+        menit = int(match25.group(2))
+        val = float(f"{derajat}.{str(menit).zfill(2)}")
+        if match25.group(3).lower() == "max":
+            return pd.Series([0, 0, val], index=["std_value", "std_min", "std_max"])
+        else:
+            return pd.Series([0, val, 0], index=["std_value", "std_min", "std_max"])
 
     return pd.Series([None, None, None], index=["std_value", "std_min", "std_max"])    
 
@@ -1184,7 +1228,7 @@ def find_mid_sequence_breaks(df):
     return suspicious_indexes
 
     # ----------- Validsi -----------
-
+# ------------ Transform To Final Format -----------------------------------//
 def transform_to_final_format(df):
     df.columns = [col.strip().replace('\n', ' ').title() for col in df.columns]
     if "Control Method" not in df.columns:
@@ -1549,55 +1593,55 @@ def transform_to_final_format(df):
 
 # ---------- Streamlit UI ----------
 
-# st.set_page_config(page_title="Check Sheet QFORM", layout="wide")
-# st.title("📄 DEBUG CHECK SHEET SCAN QFORM")
+st.set_page_config(page_title="Check Sheet QFORM", layout="wide")
+st.title("📄 DEBUG CHECK SHEET SCAN QFORM")
 
-# uploaded_file = st.file_uploader("📤 Upload PDF file", type="pdf")
+uploaded_file = st.file_uploader("📤 Upload PDF file", type="pdf")
 
-# if uploaded_file:
-#     file_hash = get_file_hash(uploaded_file)
+if uploaded_file:
+    file_hash = get_file_hash(uploaded_file)
 
-#     if "last_file_hash" not in st.session_state or st.session_state.last_file_hash != file_hash:
-#         st.session_state.last_file_hash = file_hash
-#         for key in ["df_final_data", "st.session_state.df_final_data", "show_updated_table"]:
-#             st.session_state.pop(key, None)
-#         st.cache_data.clear()
+    if "last_file_hash" not in st.session_state or st.session_state.last_file_hash != file_hash:
+        st.session_state.last_file_hash = file_hash
+        for key in ["df_final_data", "st.session_state.df_final_data", "show_updated_table"]:
+            st.session_state.pop(key, None)
+        st.cache_data.clear()
 
-#     try:
-#         df = extract_table_from_pdf(uploaded_file)
-#         if df.empty:
-#             st.warning("❌ No tables detected in the PDF.")
-#         else:
-#             df_cleaned = bersihkan_dataframe(df.copy())
-#             st.subheader("🚀 Cleaned Table")
-#             st.dataframe(df_cleaned, use_container_width=True, hide_index=True)
+    try:
+        df = extract_table_from_pdf(uploaded_file)
+        if df.empty:
+            st.warning("❌ No tables detected in the PDF.")
+        else:
+            df_cleaned = bersihkan_dataframe(df.copy())
+            st.subheader("🚀 Cleaned Table")
+            st.dataframe(df_cleaned, use_container_width=True, hide_index=True)
 
-#             if "df_final_data" not in st.session_state:
-#                 st.session_state.df_final_data = transform_to_final_format(df_cleaned)
+            if "df_final_data" not in st.session_state:
+                st.session_state.df_final_data = transform_to_final_format(df_cleaned)
 
-#             # 🚨 Validasi status data 
-#             df_validasi = st.session_state.df_final_data
-#             total = len(df_validasi)
-#             st.info(f"""
-#             - ✅ Total: {total}
-#             """)
+            # 🚨 Validasi status data 
+            df_validasi = st.session_state.df_final_data
+            total = len(df_validasi)
+            st.info(f"""
+            - ✅ Total: {total}
+            """)
 
-#             st.subheader("📊 Final Format")
-#             st.dataframe(
-#                 st.session_state.df_final_data.reset_index(drop=True),
-#                 use_container_width=True,
-#                 hide_index=True
-#             )
-#             if st.button("♻️ Reset"):
-#                 st.cache_data.clear()
-#                 for key in ["df_final_data", "st.session_state.df_final_data", "show_updated_table", "last_file_hash"]:
-#                     st.session_state.pop(key, None)
-#                 st.rerun()
+            st.subheader("📊 Final Format")
+            st.dataframe(
+                st.session_state.df_final_data.reset_index(drop=True),
+                use_container_width=True,
+                hide_index=True
+            )
+            if st.button("♻️ Reset"):
+                st.cache_data.clear()
+                for key in ["df_final_data", "st.session_state.df_final_data", "show_updated_table", "last_file_hash"]:
+                    st.session_state.pop(key, None)
+                st.rerun()
 
-#     except Exception as e:
-#         st.error(f"🔥 Error while processing the file:\n\n{e}")
-#         st.text("📄 Traceback log:")
-#         st.text(traceback.format_exc())
+    except Exception as e:
+        st.error(f"🔥 Error while processing the file:\n\n{e}")
+        st.text("📄 Traceback log:")
+        st.text(traceback.format_exc())
 
 # --- Endpoint API utama ----------------------------------------------------//
 @app.route("/api/proses_file", methods=["POST"])
