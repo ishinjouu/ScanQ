@@ -3,10 +3,11 @@
 </h1>
 
 <p align="center">
-  <img src="https://i.gifer.com/373l.gif" style="max-width: 100%; width: 500px; height: auto;"/>
+  <img src="https://i.pinimg.com/originals/33/bd/d7/33bdd73f8ed677ef20a71935341b5c22.gif" 
+       style="max-width: 100%; width: 500px; height: auto;"/>
   <br/>
   <i>"In this world... even parsing tables means suffering."</i><br/>
-  <b>Nagisa, no kin to fragile PDFs that beg and freeze</b>
+  <b>Sung Jin Woo, no kin to fragile PDFs that beg and freeze</b>
 </p>
 
 ---
