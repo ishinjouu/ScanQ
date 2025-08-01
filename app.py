@@ -127,24 +127,22 @@ def extract_table_from_pdf(file):
         for page_num, page in enumerate(pdf.pages):
             tables = page.extract_tables()
             page_tables = []
-
+            # Log ------------------------------------------------------------------------//
             # st.write(f"📄 Halaman {page_num + 1}")
             # for table_idx, table in enumerate(tables):
             #     st.write(f"  ➤ Tabel {table_idx + 1} - Jumlah baris: {len(table)}")
             #     for i, row in enumerate(table):
             #         st.write(f"    Row {i}: {row}")
-
+            # Log ------------------------------------------------------------------------//
             for table_idx, table in enumerate(tables):
                 if not table or len(table) < 2:
                     continue
-
 
                 header_row_idx = None
                 for idx, row in enumerate(table):
                     if row and any("Item" in str(cell) for cell in row):
                         header_row_idx = idx
                         break
-
 
                 if header_row_idx is not None:
                     data = table[header_row_idx:]
@@ -156,11 +154,9 @@ def extract_table_from_pdf(file):
                     while len(header) < expected_cols:
                         header.append(f"Extra_{len(header)}")
 
-
                     normalized_data = []
                     for row in data[1:]:
                         padded_row = row + [""] * (len(header) - len(row))
-
 
                         target_idx = 2
                         if not padded_row[target_idx] or str(padded_row[target_idx]).strip() == "":
@@ -173,7 +169,6 @@ def extract_table_from_pdf(file):
 
                         normalized_data.append(padded_row)
 
-
                     seen = {}
                     new_header = []
                     for col in header:
@@ -184,7 +179,6 @@ def extract_table_from_pdf(file):
                             seen[col] = 0
                             new_header.append(col)
 
-
                     df = pd.DataFrame(normalized_data, columns=new_header)
                     page_tables.append(df)
                 else:
@@ -194,14 +188,12 @@ def extract_table_from_pdf(file):
                 df["page_number"] = page_num + 1
                 # page_tables.append(df)
 
-
             if page_tables:
                 try:
                     merged_df = pd.concat(page_tables, axis=0, ignore_index=True)
                     all_dataframes.append(merged_df)
                 except Exception as e:
                     st.warning(f"⚠️ Gagal merge tabel di halaman {page_num+1}: {e}")
-
 
     normalized_tables = []
     for df in all_dataframes:
@@ -210,9 +202,7 @@ def extract_table_from_pdf(file):
                 df[f"Extra_{i}"] = ""
         normalized_tables.append(df)
 
-
     return pd.concat(normalized_tables, ignore_index=True) if normalized_tables else pd.DataFrame()
-
 
 def merge_partial_rows(df, value_col="Standard", threshold=3):
     merged_rows = []
@@ -242,7 +232,6 @@ def merge_partial_rows(df, value_col="Standard", threshold=3):
         merged_rows.append(buffer)
     return pd.DataFrame(merged_rows)
 
-
 def group_rows_by_item(df):
     if "Item" not in df.columns or "Standard" not in df.columns:
         return df
@@ -269,7 +258,7 @@ def group_rows_by_item(df):
 # ---------- Footer & Flip Cleaners ----------
 
 def hapus_footer(df):
-    keywords = ["keputusan", "keterangan", "approved", "checked", "disetujui", "diperiksa", "dibuat", "nama", "tanggal", "ttd"]
+    keywords = ["keputusan", "keterangan", "approved", "checked", "disetujui", "diperiksa", "dibuat", "nama", "ttd"]
     
     cleaned_pages = []
     unique_pages = df["page_number"].unique()
@@ -583,6 +572,7 @@ def bersihkan_dataframe(df):
         shift_pattern = r"(?:shift|tfihs)"
         day_pattern = r"(?:day|yad)"
         combined_pattern = rf"(1x\s*{shift_pattern}\s*&\s*1x\s*{day_pattern})|(1x\s*{day_pattern}\s*&\s*1x\s*{shift_pattern})"
+        combined_pattern2 = rf"(1 pcs\s*{shift_pattern}\s*&\s*1 pcs\s*{day_pattern})|(1 pcs\s*{day_pattern}\s*&\s*1 pcs\s*{shift_pattern})"
         if re.search(combined_pattern, teks):
             return "Patrol 1x/Shift & 1x/Day"
 
@@ -592,6 +582,19 @@ def bersihkan_dataframe(df):
                 return "Patrol 1x/Shift"
         for syn in day_synonyms:
             if re.search(rf"(?:x1|1x)\s*{syn}|{syn}\s*(?:x1|1x)", teks):
+                return "Patrol 1x/Day"
+            
+            # /////
+            
+        if re.search(combined_pattern2, teks):
+            return "Patrol 1x/Shift & 1x/Day"
+
+        # === Kasus umum: scp 1 atau 1 pcs dengan shift/day dalam urutan dan spasi bebas ===
+        for syn in shift_synonyms:
+            if re.search(rf"(?:sc 1|1 pcs)\s*{syn}|{syn}\s*(?:scp 1|1 pcs)", teks):
+                return "Patrol 1x/Shift"
+        for syn in day_synonyms:
+            if re.search(rf"(?:psc 1|1 pcs)\s*{syn}|{syn}\s*(?:scp 1|1 pcs)", teks):
                 return "Patrol 1x/Day"
 
         return teks
@@ -771,8 +774,9 @@ def copy_special_measurements_to_note(row):
     if jenis_point not in ["Dengan Ukur", "Dengan CMM"]:
         return row
 
-    standard_normalized = re.sub(r"\b([Mm]in|[Mm]ax)\.", r"\1", standard)
-    min_max_match = re.search(r"\b([Mm]in|[Mm]ax)\s*\d+(?:\.\d+)?", standard_normalized)
+    standard_normalized = standard.replace(",", ".")
+    standard_normalized = re.sub(r"\b([Mm]in|[Mm]ax)\.", r"\1", standard_normalized)  # ini juga diganti standard-nya
+    min_max_match = re.search(r"\b([Mm]in|[Mm]ax)\s*(\d+(?:\.\d+)?|\.\d+)", standard_normalized)
     if min_max_match:
         tag = f"[{min_max_match.group(0).strip()}]"
         if tag not in catatan:
@@ -783,17 +787,28 @@ def copy_special_measurements_to_note(row):
         r"[Ø°]\d+(?:\.\d+)?\s*\(\s*\d+(?:\.\d+)?\s*~\s*[+−-]?\d+(?:\.\d+)?\s*\)",           # Ø6.1 ( 0 ~ +0.1 )
         r"[Ø°]\d+(?:\.\d+)?\s*\(\s*[+−-]?\d+(?:\.\d+)?\s*~\s*[+−-]?\d+(?:\.\d+)?\s*\)",     # Ø12.15 (-0.15 ~ +0.25)
         r"\d+(?:\.\d+)?º\s*±\s*\d+(?:\.\d+)?º",                                             # 15º ± 3º
-        r"\d{1,3}[°º]\s*±\s*\d{1,3}[°º]\s*\d{1,2}['′`´]"                                    # 32° ± 1°30', 3
-        r"^0(?:\.0+)?\s*\(\s*Reff\s*\)$"                                                    # 0 (Reff)  
+        r"\d{1,3}[°º]\s*±\s*\d{1,3}[°º]\s*\d{1,2}['′´]",                                    # 32° ± 1°30'
+        r"^0(?:\.0+)?\s*\(\s*Reff\s*\)$",                                                   # 0 (Reff)
+        r"\(\s*Reff\.?\s*\d+\s*\(\s*[+-−]?\d+(?:\.\d+)?\s*~\s*[+-−]?\d+(?:\.\d+)?\s*\)\s*\)",      # ( Reff. 0 (0 ~ +0.3) )
+        r"\[\s*Reff\.?\s*0\s*\(\s*[+-−]?\d+(?:\.\d+)?\s*~\s*[+-−]?\d+(?:\.\d+)?\s*\)\]",           # [ Reff. 0 (0 ~ +0.3) ]
+        r"\[[Ø°]\d+(?:\.\d+)?\s*\[\s*[+\-−]?\d+(?:\.\d+)?\s*~\s*[+\-−]?\d+(?:\.\d+)?\s*\]"         # [Ø5.5 [-0.3 ~ 0]
+        r"Ø\d+(?:\.\d+)?\s*\[-?\d+(?:\.\d+)?\s*~\s*-?\d+(?:\.\d+)?\]",                             # Ø7 [-0.3 ~ 0]
+        r"\[?[Ø°]\d+(?:\.\d+)?\s*\[\s*[+−-]?\d+(?:\.\d+)?\s*~\s*[+−-]?\d+(?:\.\d+)?\s*\]",         # [Ø5.5 [-0.3 ~ 0]
+        r"[Ø°]\d+(?:\.\d+)?\s*\(\s*[+-−]?\d+(?:\.\d+)?\s*~\s*[+-−+]?\d+(?:\.\d+)?\s*[\)\]]",       #[Ø6.5 (0 ~ +0.4]
+        r"\b[Mm]ax\s*Rz\s*\d+(?:\.\d+)?",                                                          # Max Rz 25    
     ]
 
     ukuran_found = None
     for pattern in size_patterns:
         match = re.search(pattern, standard)
-        if match:
-            ukuran_found = match.group(0).strip().replace("[", "").replace("]", "")
-            break  
-
+        if match is not None:
+            ukuran_found = match.group(0).strip()
+            if any(tag in ukuran_found for tag in ["[Max]", "[Min]", "[Reff", "[Reff."]):
+                pass 
+            else:
+                ukuran_found = ukuran_found.replace("[", "(").replace("]", ")")
+            break
+        
     if ukuran_found and ukuran_found not in catatan:
         catatan += f" {ukuran_found}"
 
@@ -998,6 +1013,22 @@ def parse_standard_value(row):
     if match20:
         std_value = std_min = std_max = 0.0
         return pd.Series([std_value, std_min, std_max], index=["std_value", "std_min", "std_max"])
+    
+    match21 = re.match(
+    r"^\[?[Ø°](\d+(?:\.\d+)?)\s*\(\s*([+-−]?\d+(?:\.\d+)?)\s*~\s*([+-−]?\d+(?:\.\d+)?)\s*\]?$",
+    standard
+    )
+    if match21:
+        std_value = float(match21.group(1))
+        std_min = float(match21.group(2))
+        std_max = float(match21.group(3))
+        return pd.Series([std_value, std_min, std_max], index=["std_value", "std_min", "std_max"])
+    
+    # 22. Max Rz 25
+    match22 = re.search(r"Max\s*Rz\s*(\d+(?:\.\d+)?)", standard, re.IGNORECASE)
+    if match22:
+        value = float(match22.group(1))  
+        return pd.Series([0, 0, value], index=["std_value", "std_min", "std_max"])
 
     return pd.Series([None, None, None], index=["std_value", "std_min", "std_max"])    
 
@@ -1034,6 +1065,67 @@ def fill_empty_catatan_from_group(df):
 
     return df
 
+def append_cmm_summary_row(df):
+    # Filter only CMM rows
+    df_cmm = df[df["jenis_point"] == "Dengan CMM"]
+    if df_cmm.empty:
+        return df
+
+    # Determine next section number
+    last_section = df["section"].dropna().tolist()
+    last_num = 0
+    for s in last_section[::-1]:
+        match = re.match(r"^(\d+)\.", str(s).strip())
+        if match:
+            last_num = int(match.group(1))
+            break
+    new_section = df['section'].dropna().iloc[-1] if not df['section'].dropna().empty else "General"
+
+    # Determine next point_check number
+    def extract_point_number(val):
+        try:
+            return int(str(val).strip().split(".")[0])
+        except:
+            return 0
+
+    point_nums = df["point_check"].dropna().apply(extract_point_number)
+    max_point = point_nums.max() if not point_nums.empty else 0
+    new_point_check = str(max_point + 1)
+
+    # Determine jenis_pengecekan list
+    all_pengecekan = df_cmm["jenis_pengecekan"].dropna().tolist()
+    flat_list = []
+    for item in all_pengecekan:
+        if isinstance(item, list):
+            flat_list.extend(item)
+        elif isinstance(item, str):
+            flat_list.extend([s.strip() for s in item.split(",") if s.strip()])
+    clean_list = list(set(flat_list)) if flat_list else ["-"]
+
+    # Build the new row
+    new_row = {
+        "section": new_section,
+        "point_check": new_point_check,
+        "jenis_point": "Tanpa Ukur",
+        "item_check": "Hasil CMM",
+        "standard": "Masuk range toleransi",
+        "catatan": "-",
+        "jenis_pengecekan": clean_list,
+        "control_method": "-",
+        "std_value": None,
+        "std_min": None,
+        "std_max": None,
+        "status": "valid"
+    }
+
+    # Match all columns, fill missing with "-"
+    for col in df.columns:
+        if col not in new_row:
+            new_row[col] = "-"
+
+    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    return df
+
 # ----------- Validsi -----------
 def find_mid_sequence_breaks(df):
     suspicious_indexes = []
@@ -1067,6 +1159,7 @@ def find_mid_sequence_breaks(df):
                     suspicious_indexes.append(idx)
 
     return suspicious_indexes
+
     # ----------- Validsi -----------
 
 def transform_to_final_format(df):
@@ -1089,7 +1182,7 @@ def transform_to_final_format(df):
     dengan_ukur_keywords = ["caliper", "hg", "depth cal", "pitch dial", "rough. t", "hitung", "depth clp", "height g", "dial g"]
     tanpa_ukur_keywords = [
         "visual", "pg", "snap g.", "visual & punch", "visual + kikir", "visual & kikir",
-        "machining test", "visual ( reff. master rough.)", "insp. jig", "finishing test"
+        "machining test", "visual ( reff. master rough.)", "insp. jig", "finishing test",
     ]
     dengan_cmm_keywords = ["cmm"]
 
@@ -1408,6 +1501,7 @@ def transform_to_final_format(df):
     df_result.loc[suspect_material, "status"] = "salah_format"
     # Hapus otomatis
     df_result = df_result[df_result["status"] == "valid"].reset_index(drop=True)
+    df_result = append_cmm_summary_row(df_result)
 
     return df_result
 
