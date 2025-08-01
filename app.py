@@ -259,6 +259,7 @@ def group_rows_by_item(df):
 
 def hapus_footer(df):
     keywords = ["keputusan", "keterangan", "approved", "checked", "disetujui", "diperiksa", "dibuat", "nama", "ttd"]
+    # keywords = ["keputusan"]
     
     cleaned_pages = []
     unique_pages = df["page_number"].unique()
@@ -773,6 +774,13 @@ def copy_special_measurements_to_note(row):
     jenis_point = str(row.get("jenis_point", "")).strip()
     if jenis_point not in ["Dengan Ukur", "Dengan CMM"]:
         return row
+    
+    # --- Tambahan: Deteksi pola ( Reff : 0 ~ +0.5 ) ---
+    match_reff = re.search(r'\(\s*Reff\s*:\s*([+-]?\d+(?:\.\d+)?)\s*~\s*([+-]?\d+(?:\.\d+)?)\s*\)', standard, re.IGNORECASE)
+    if match_reff:
+        reff_text = match_reff.group(0)
+        if reff_text not in catatan:
+            catatan = f"{catatan} {reff_text}".strip()
 
     standard_normalized = standard.replace(",", ".")
     standard_normalized = re.sub(r"\b([Mm]in|[Mm]ax)\.", r"\1", standard_normalized)  # ini juga diganti standard-nya
@@ -857,6 +865,14 @@ def parse_standard_value(row):
 
     if jenis_point == "Tanpa Ukur":
         return pd.Series([None, None, None], index=["std_value", "std_min", "std_max"])
+
+    # --- Tambahan: Deteksi pola ( Reff : 0 ~ +0.5 ) di mana saja ---
+    match_reff = re.search(r'\(\s*Reff\s*:\s*([+-]?\d+(?:\.\d+)?)\s*~\s*([+-]?\d+(?:\.\d+)?)\s*\)', standard, re.IGNORECASE)
+    if match_reff:
+        std_value = float(match_reff.group(1))
+        std_min = float(match_reff.group(1))
+        std_max = float(match_reff.group(2))
+        return pd.Series([std_value, std_min, std_max], index=["std_value", "std_min", "std_max"]) 
 
     # 1. 0 ±0.2
     match1 = re.search(r'(\d+(?:\.\d+)?)\s*±\s*(\d+(?:\.\d+)?)', standard)
@@ -1175,6 +1191,25 @@ def transform_to_final_format(df):
         df["Control Method"] = np.nan
     df = df.replace(to_replace=["", "nan", "None"], value=np.nan)
    
+    # --- SPLIT MULTI CONTROL METHOD ---
+    def split_control_methods(df):
+        split_rows = []
+        for _, row in df.iterrows():
+            ctrl = str(row.get("Control Method", "")).strip()
+            # Pisahkan dengan &, /, koma, atau " dan "
+            methods = re.split(r"\s*(?:&|/|,| dan )\s*", ctrl)
+            methods = [m for m in methods if m]
+            if len(methods) > 1:
+                for m in methods:
+                    new_row = row.copy()
+                    new_row["Control Method"] = m
+                    split_rows.append(new_row)
+            else:
+                split_rows.append(row)
+        return pd.DataFrame(split_rows)
+
+    df = split_control_methods(df)
+
     def bersihkan_control_method_bocor(text):
         if not isinstance(text, str):
             return text
@@ -1514,55 +1549,55 @@ def transform_to_final_format(df):
 
 # ---------- Streamlit UI ----------
 
-st.set_page_config(page_title="Check Sheet QFORM", layout="wide")
-st.title("📄 DEBUG CHECK SHEET SCAN QFORM")
+# st.set_page_config(page_title="Check Sheet QFORM", layout="wide")
+# st.title("📄 DEBUG CHECK SHEET SCAN QFORM")
 
-uploaded_file = st.file_uploader("📤 Upload PDF file", type="pdf")
+# uploaded_file = st.file_uploader("📤 Upload PDF file", type="pdf")
 
-if uploaded_file:
-    file_hash = get_file_hash(uploaded_file)
+# if uploaded_file:
+#     file_hash = get_file_hash(uploaded_file)
 
-    if "last_file_hash" not in st.session_state or st.session_state.last_file_hash != file_hash:
-        st.session_state.last_file_hash = file_hash
-        for key in ["df_final_data", "st.session_state.df_final_data", "show_updated_table"]:
-            st.session_state.pop(key, None)
-        st.cache_data.clear()
+#     if "last_file_hash" not in st.session_state or st.session_state.last_file_hash != file_hash:
+#         st.session_state.last_file_hash = file_hash
+#         for key in ["df_final_data", "st.session_state.df_final_data", "show_updated_table"]:
+#             st.session_state.pop(key, None)
+#         st.cache_data.clear()
 
-    try:
-        df = extract_table_from_pdf(uploaded_file)
-        if df.empty:
-            st.warning("❌ No tables detected in the PDF.")
-        else:
-            df_cleaned = bersihkan_dataframe(df.copy())
-            st.subheader("🚀 Cleaned Table")
-            st.dataframe(df_cleaned, use_container_width=True, hide_index=True)
+#     try:
+#         df = extract_table_from_pdf(uploaded_file)
+#         if df.empty:
+#             st.warning("❌ No tables detected in the PDF.")
+#         else:
+#             df_cleaned = bersihkan_dataframe(df.copy())
+#             st.subheader("🚀 Cleaned Table")
+#             st.dataframe(df_cleaned, use_container_width=True, hide_index=True)
 
-            if "df_final_data" not in st.session_state:
-                st.session_state.df_final_data = transform_to_final_format(df_cleaned)
+#             if "df_final_data" not in st.session_state:
+#                 st.session_state.df_final_data = transform_to_final_format(df_cleaned)
 
-            # 🚨 Validasi status data 
-            df_validasi = st.session_state.df_final_data
-            total = len(df_validasi)
-            st.info(f"""
-            - ✅ Total: {total}
-            """)
+#             # 🚨 Validasi status data 
+#             df_validasi = st.session_state.df_final_data
+#             total = len(df_validasi)
+#             st.info(f"""
+#             - ✅ Total: {total}
+#             """)
 
-            st.subheader("📊 Final Format")
-            st.dataframe(
-                st.session_state.df_final_data.reset_index(drop=True),
-                use_container_width=True,
-                hide_index=True
-            )
-            if st.button("♻️ Reset"):
-                st.cache_data.clear()
-                for key in ["df_final_data", "st.session_state.df_final_data", "show_updated_table", "last_file_hash"]:
-                    st.session_state.pop(key, None)
-                st.rerun()
+#             st.subheader("📊 Final Format")
+#             st.dataframe(
+#                 st.session_state.df_final_data.reset_index(drop=True),
+#                 use_container_width=True,
+#                 hide_index=True
+#             )
+#             if st.button("♻️ Reset"):
+#                 st.cache_data.clear()
+#                 for key in ["df_final_data", "st.session_state.df_final_data", "show_updated_table", "last_file_hash"]:
+#                     st.session_state.pop(key, None)
+#                 st.rerun()
 
-    except Exception as e:
-        st.error(f"🔥 Error while processing the file:\n\n{e}")
-        st.text("📄 Traceback log:")
-        st.text(traceback.format_exc())
+#     except Exception as e:
+#         st.error(f"🔥 Error while processing the file:\n\n{e}")
+#         st.text("📄 Traceback log:")
+#         st.text(traceback.format_exc())
 
 # --- Endpoint API utama ----------------------------------------------------//
 @app.route("/api/proses_file", methods=["POST"])
