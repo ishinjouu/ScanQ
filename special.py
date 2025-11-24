@@ -6,6 +6,7 @@ import re
 from utils import (
     copy_special_measurements_to_note,
     parse_standard_value,
+    append_cmm_summary_row
 )
 
 # ===================================================================================================
@@ -225,15 +226,92 @@ def bersihkan_dataframe(df):
         clean_df = clean_df.dropna(how="all").reset_index(drop=True)
         for c in ["Section","No", "Item", "Standard"]:
             clean_df[c] = clean_df[c].fillna(method="ffill")
-        clean_df = extract_single_caps_as_note(clean_df, target_caps=["F","M","Q"], source_cols=["Item", "Standard"])
-        clean_df = tambah_section_nomor(clean_df)
+
         clean_df = merge_point_item(clean_df)
+        clean_df = tambah_section_nomor(clean_df)
+        clean_df = clean_df.reset_index(drop=True)
+        last_section = "-"
+        for r in range(len(clean_df)):
+            val = str(clean_df.loc[r, "Section"]).strip()
+            if val and val.lower() not in ["nan", "none", "-"]:
+                last_section = val
+            clean_df.loc[r, "Section"] = last_section
         clean_df = isi_label_abjad_di_antara(clean_df, kolom='Item', No='No')
+        clean_df = extract_single_caps_as_note(clean_df, ...)
+        
+        # Jobsetup fallback -- fill up
+        control_cols = ["Verifikasi Job Set Up (Method)"]
+        for cc in control_cols:
+            if cc in clean_df.columns:
+                clean_df[cc] = clean_df[cc].replace(["", "None", None, np.nan], np.nan)
+                clean_df[cc] = clean_df[cc].fillna(method="ffill")
         result_tables.append(clean_df)
 
     return pd.concat(result_tables, ignore_index=True) if result_tables else df
 
+# Section Number --------------------------------------------------------------------------------------------------//
+def tambah_section_nomor(df):
+    df = df.copy()
+    SECTION_REGEX = r'^\s*(I{1,3}|IV|V|VI{0,3}|VII{0,3}|VIII|IX|X)\s*[\.\-–]\s*(.+)$'
+    current_section = None
+    current_sharp = None
+    section_from_sharp = False  
+    new_rows = []
+    for i in range(len(df)):
+        row = df.iloc[i].copy()
+        item_val = str(row["Item"]).strip()
+        first_col = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+        match = re.match(SECTION_REGEX, first_col, re.IGNORECASE)
+        if match:
+            roman = match.group(1)
+            title = match.group(2).strip()
+            current_section = f"{roman_to_int(roman)}. {title}"
+            current_sharp = None
+            section_from_sharp = False 
+            row["Section"] = current_section
+            new_rows.append(row)
+            continue
+        if "#" in item_val:
+            sharp_clean = item_val.split("#", 1)[1].strip()
+            # CASE A — tidak ada SECTION sama sekali
+            if current_section is None:
+                current_section = sharp_clean
+                current_sharp = None
+                section_from_sharp = True 
+                continue
+            # CASE B — ada SECTION asli sebelumnya (roman numeral)
+            if not section_from_sharp:
+                current_sharp = sharp_clean
+                continue
+            # CASE C — section dari #, ketemu # lagi → GANTI SECTION
+            current_section = sharp_clean
+            current_sharp = None
+            section_from_sharp = True
+            continue
+        # 3) Default
+        row = df.iloc[i].copy()
+        if current_sharp:
+            row["Section"] = f"{current_section}#{current_sharp}"
+        else:
+            row["Section"] = current_section if current_section else "-"
+        new_rows.append(row)
+    if not new_rows:
+        df["Section"] = "-"
+        return df
+    return pd.DataFrame(new_rows)
+
+def roman_to_int(roman):
+    roman = roman.upper()
+    roman_dict = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100}
+    result, prev = 0, 0
+    for char in reversed(roman):
+        val = roman_dict.get(char, 0)
+        result += val if val >= prev else -val
+        prev = val
+    return result
+
 # label bolong b. dll ------------------------------------------------------------//
+# ga error tapi di case Sumbu Ø51, no nya masih harus di edit manual
 def isi_label_abjad_di_antara(df, kolom='Item', No='No'):
     pola = re.compile(r'^([a-zA-Z]*)(\d+)\s*(.*)$') 
     new_items = []
@@ -273,14 +351,13 @@ def isi_label_abjad_di_antara(df, kolom='Item', No='No'):
         now_no = str(df.iloc[i][No]).strip()
         prev_no = str(df.iloc[i-1][No]).strip()
         if re.match(r'^\d+$', now_no):
-            # kalau sebelumnya "5b" → ambil suffix "b"
             prev_match = re.match(r'^(\d+)([a-zA-Z]+)$', prev_no)
             if prev_match and prev_match.group(1) == now_no:
                 suffix = prev_match.group(2)
                 df.iloc[i, df.columns.get_loc(No)] = f"{now_no}{suffix}"
 
     # Sumbu X/Y/Z
-    pola_xyz = re.compile(r'^[XYZxyz]$')
+    pola_xyz = re.compile(r'^[XYZxyz]\b.*$')
     last_full_item = None
     for i in range(len(df)):
         item_val = str(df.iloc[i][kolom]).strip()
@@ -292,66 +369,44 @@ def isi_label_abjad_di_antara(df, kolom='Item', No='No'):
 
     return df
 
-# [F], [Q], [M] ----------------------------------------------------------------------------------------------------//
+# [F], [Q] ----------------------------------------------------------------------------------------------------//
+# still error : 2f F --> remark not appear
 def extract_single_caps_as_note(df, target_caps=None, source_cols=None, remark_col="remark"):
     if target_caps is None:
-        target_caps = ["F", "M", "Q"] 
+        target_caps = ["F", "Q"]
     if source_cols is None:
-        source_cols = ["Item", "Standard"]
+        source_cols = ["No", "Item", "Standard"]
+    standalone = r'(?<![A-Za-z0-9])([FQ])(?![A-Za-z0-9])'
+    numeric_caps = r'(\d+)([FQ])'
+
     def process_row(row):
-        tags = set()
+        # skip if "to F" or "to Q"
+        text_all = " ".join(str(row.get(c, "") or "") for c in source_cols).lower()
+        if re.search(r'\bto\s+[fq]\b', text_all):
+            # pastikan remark kosong = "-"
+            current = row.get(remark_col, "")
+            if current is None or str(current).strip() == "":
+                row[remark_col] = "-"
+            return row
+        remark = str(row.get(remark_col, "") or "").strip()
         for col in source_cols:
-            val = str(row.get(col, "")).strip()
-            matches = re.findall(r'(?<!\w)\b([A-Z])\b(?!\w)', val)
-            for m in matches:
-                if m in target_caps:
-                    tags.add(f"[{m}]")
-            for m in target_caps:
-                val = re.sub(rf'(?<!\w)\b{m}\b(?!\w)', '', val)
-            val = re.sub(r'\s+', ' ', val).strip()
-            row[col] = val
-        row[remark_col] = " ".join(sorted(tags)) if tags else ""
+            text = str(row.get(col, "") or "").strip()
+            found = re.findall(standalone, text)
+            for cap in found:
+                tag = f"[{cap}]"
+                if tag not in remark:
+                    remark = (remark + " " + tag).strip()
+            found2 = re.findall(numeric_caps, text)
+            for num, cap in found2:
+                tag = f"[{cap}]"
+                if tag not in remark:
+                    remark = (remark + " " + tag).strip()
+            cleaned = re.sub(standalone, " ", text)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            row[col] = cleaned
+            row[remark_col] = remark  
         return row
-    df = df.apply(process_row, axis=1)
-    return df
-
-# Section Number --------------------------------------------------------------------------------------------------//
-def tambah_section_nomor(df):
-    if df.empty:
-        return df
-    SECTION_REGEX = r'^\s*(I{1,3}|IV|V|VI{0,3}|VII{0,3}|VIII|IX|X)\s*[\.\-–]\s*(.+)$'
-    def roman_to_int(roman):
-        roman = roman.upper()
-        roman_dict = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100}
-        result, prev = 0, 0
-        for char in reversed(roman):
-            val = roman_dict.get(char, 0)
-            result += val if val >= prev else -val
-            prev = val
-        return result
-    cleaned_rows = []
-    section_col = []
-    current_section = None
-    for _, row in df.iterrows():
-        first_col = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
-        match = re.match(SECTION_REGEX, first_col, re.IGNORECASE)
-        if match:
-            roman = match.group(1)
-            title = match.group(2).strip()  
-            number = roman_to_int(roman)
-            current_section = f"{number}. {title}"  
-            continue  
-        cleaned_rows.append(row)
-        section_col.append(current_section)
-
-    clean_df = pd.DataFrame(cleaned_rows, columns=df.columns)
-    if "Section" in clean_df.columns:
-        clean_df["Section"] = section_col
-    else:
-        clean_df.insert(0, "Section", section_col)
-    clean_df["Section"] = clean_df["Section"].ffill()
-
-    return clean_df
+    return df.apply(process_row, axis=1)
 
 # Merge point number to 1a, 1b, etc ------------------------------------------------------------------------------//
 def merge_point_item(df):
@@ -477,6 +532,26 @@ def handle_control_method(row): # Control method & Jenis Pengecekan ------------
 
     return hasil
 
+# Validasi For Final Format ---------------------------------------------------------------------------//
+def find_exact_duplicates(df): # for duplicated data
+    duplicate_indexes = []
+    seen_keys = set()
+    key_columns = ["section", "point_check", "jenis_point", "catatan","item_check", "control_method", "std_value", "std_min", "std_max"]
+    for idx, row in df.iterrows():
+        row_key = tuple(
+            str(row.get(col, "")).strip().lower()
+            .replace(", ", ",")
+            .replace(" ,", ",")
+            .replace("\n", " ")
+            if not pd.isna(row.get(col)) else ""
+            for col in key_columns
+        )
+        if row_key in seen_keys:
+            duplicate_indexes.append(idx)
+        else:
+            seen_keys.add(row_key)
+    return duplicate_indexes
+
 #  Main Fitur ----------------------------------------------------------------------------------------------------//
 def transform_to_final_format(df):
     df.columns = [col.strip().replace('\n', ' ').title() for col in df.columns]
@@ -484,13 +559,14 @@ def transform_to_final_format(df):
     if "Control Method" not in df.columns:
         df["Control Method"] = np.nan
     dengan_ukur_keywords = [
-        "caliper", "hg", "depth cal", "pitch dial",
-        "rough. t", "hitung", "depth clp", "height g", "dial g"
+        "caliper", "hg", "depth cal", "pitch dial", "torque dial", "depth cal.",
+        "rough. t", "hitung", "depth clp", "height g", "dial g", 
+        "thickness meter", "thicknes s meter", "thicknes meter",
     ]
     tanpa_ukur_keywords = [
-        "visual", "pg", "snap g.", "visual & punch", "visual + kikir",
-        "visual & kikir", "machining test", "visual ( reff. master rough.)",
-        "insp. jig", "finishing test"
+        "visual", "pg", "snap g.", "visual & punch", "visual + kikir", "Putar dg tangan",
+        "visual & kikir", "machining test", "visual ( reff. master rough.)", "Poka Yoke test",
+        "insp. jig", "finishing test", "Visual + tangan", "Leak tester", "Torque M"
     ]
     dengan_cmm_keywords = ["cmm"]
 
@@ -514,35 +590,55 @@ def transform_to_final_format(df):
         else:
             final[col] = ""
 
-    # --- FIX SECTION FILL ---
-    final["section"] = final["section"].ffill()
-    if pd.isna(final.loc[0, "section"]) or final.loc[0, "section"] == "":
-        final.loc[0, "section"] = "-"
-    final["section"] = final["section"].replace([None, "", np.nan], "-")
+    # --- FIX SECTION FILL "-" ---
+    final["section"] = final["section"].replace([None, np.nan], "")
+    last_valid = None
+    fixed_sections = []
+    for val in final["section"]:
+        val_str = str(val).strip()
+        if val_str not in ["", "-"]:
+            last_valid = val_str
+            fixed_sections.append(val_str)
+        else:
+            if last_valid is not None:
+                fixed_sections.append(last_valid)
+            else:
+                fixed_sections.append("-")
+    final["section"] = fixed_sections
 
     expanded = []
     for _, r in final.iterrows():
         expanded.extend(handle_control_method(r))  
     final = pd.DataFrame(expanded)
 
-    def tentukan_jenis_point(method, raw_methods):
-        method_lower = str(method).lower().strip()
-        if any(k in method_lower for k in dengan_cmm_keywords):
+    # dengan ukur, tanpa ukur, dengan cmm
+    def tentukan_jenis_point(method, raw_methods): 
+        def norm(s):
+            s = str(s or "")
+            s = s.lower()
+            s = re.sub(r"\s+", " ", s)
+            return s.strip()
+        method_lower = norm(method)
+        _dengan_ukur = [norm(k) for k in dengan_ukur_keywords]
+        _tanpa_ukur = [norm(k) for k in tanpa_ukur_keywords]
+        _dengan_cmm = [norm(k) for k in dengan_cmm_keywords]
+        if any(k in method_lower for k in _dengan_cmm):
             return "Dengan CMM"
-        if any(k in method_lower for k in dengan_ukur_keywords):
+        if any(k in method_lower for k in _dengan_ukur):
             return "Dengan Ukur"
-        if any(k in method_lower for k in tanpa_ukur_keywords):
+        if any(k in method_lower for k in _tanpa_ukur):
             return "Tanpa Ukur"
-        # fallback: kalau kolom method lain mengandung kata kunci
+        
         for col in METHOD_TO_JENIS.keys():
-            val = str(raw_methods.get(col, "")).lower()
-            if any(k in val for k in dengan_cmm_keywords):
+            val = norm(raw_methods.get(col, ""))
+            if any(k in val for k in _dengan_cmm):
                 return "Dengan CMM"
-            if any(k in val for k in dengan_ukur_keywords):
+            if any(k in val for k in _dengan_ukur):
                 return "Dengan Ukur"
-            if any(k in val for k in tanpa_ukur_keywords):
+            if any(k in val for k in _tanpa_ukur):
                 return "Tanpa Ukur"
         return "Tanpa Ukur"
+    
     final["jenis_point"] = final.apply(
         lambda r: tentukan_jenis_point(r["control_method"], r),
         axis=1
@@ -570,5 +666,23 @@ def transform_to_final_format(df):
         return row
 
     final = final.apply(parse_std_for_row, axis=1)
+    final["catatan"] = final["catatan"].apply(lambda x: "-" if pd.isna(x) or str(x).strip() == "" else x)
+    final = append_cmm_summary_row(final)
+
+    # Validasi ( Footer bocor )--------------------------------------------------------//
+    def is_valid_point_check(x):
+        if x is None or str(x).strip() == "":
+            return False
+        s = str(x).strip()
+        if re.fullmatch(r'\d+[a-zA-Z]?$', s):
+            return True
+        return False
+    final = final[final["point_check"].apply(is_valid_point_check)].reset_index(drop=True)
+    # Validasi duplikat ===============
+    final["status"] = "valid"
+    duplicate_rows = find_exact_duplicates(final)
+    final.loc[duplicate_rows, "status"] = "duplikat"
+    # Hapus otomatis 
+    final = final[final["status"] == "valid"].reset_index(drop=True)
 
     return final

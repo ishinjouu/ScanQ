@@ -5,6 +5,7 @@ import numpy as np
 import re
 from difflib import get_close_matches
 from utils import (
+    append_cmm_summary_row,
     copy_special_measurements_to_note,
     parse_standard_value,
     fill_empty_catatan_from_group
@@ -1111,4 +1112,6 @@ def transform_to_final_format(df):
     # Hapus otomatis
     df_result = df_result[df_result["status"] == "valid"].reset_index(drop=True)
 
+    df_result = append_cmm_summary_row(df_result)
+    
     return df_result

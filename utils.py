@@ -16,7 +16,7 @@ def copy_special_measurements_to_note(row):
     #     if tag not in catatan:
     #         catatan += f" {tag}"
     # === Min/Max biasa tanpa simbol ===
-    min_max_match = re.search(r"\b([Mm]in|[Mm]ax)\.?\s*[Ø°μ]?\s*\d+(?:\.\d+)?[A-Za-z]?", standard)
+    min_max_match = re.search(r"\b([Mm]in|[Mm]ax)\.?\s*[Ø°μ]?\s*\d+(?:\.\d+)?\s*[A-Za-z]+",standard)
     if min_max_match:
         tag = f"[{min_max_match.group(0).strip()}]"
         if tag not in catatan:
@@ -28,7 +28,7 @@ def copy_special_measurements_to_note(row):
         r"[Ø°]\d+(?:\.\d+)?\s*\(\s*[-+]?\d+(?:\.\d+)?\s*~\s*[-+]?\d+(?:\.\d+)?\s*\)",       # Ø6.1 (0 ~ +0.1) / Ø40 (-0.050 ~ -0.035)
         r"[Ø°]\d+(?:\.\d+)?\s*\(\s*[+−-]?\d+(?:\.\d+)?\s*~\s*[+−-]?\d+(?:\.\d+)?\s*\)",     # Ø12.15 (-0.15 ~ +0.25)
         r"\d+(?:\.\d+)?º\s*±\s*\d+(?:\.\d+)?º",                                             # 15º ± 3º
-                r"\d{1,3}[°º]\s*±\s*\d{1,3}[°º]\s*\d{1,2}['′`´]"                            # 32° ± 1°30', 3
+        r"\d{1,3}[°º]\s*±\s*\d{1,3}[°º]\s*\d{1,2}['′`´]"                                    # 32° ± 1°30', 3
     ]
 
     ukuran_found = None
@@ -257,5 +257,73 @@ def parse_standard_value(row):
             return pd.Series([value_num, 0, 99999], index=["std_value", "std_min", "std_max"]) # min
         else: 
             return pd.Series([0, 0, value_num], index=["std_value", "std_min", "std_max"]) # max
+        
+    # 20. Min 20µ / Min 20um / Min20µm
+    match20 = re.search(r'\bMin\.?\s*([0-9]+)\s*(µ|um|µm)?\b', standard, re.IGNORECASE)
+    if match20:
+        value = float(match20.group(1))
+        return pd.Series([value, 0, 99999], index=["std_value", "std_min", "std_max"])
 
     return pd.Series([None, None, None], index=["std_value", "std_min", "std_max"])
+
+# dengan CMM -------------------------------------------------------------------------------------------------
+def append_cmm_summary_row(df):
+    # Filter only CMM rows
+    df_cmm = df[df["jenis_point"] == "Dengan CMM"]
+    if df_cmm.empty:
+        return df
+
+    # Determine next section number
+    last_section = df["section"].dropna().tolist()
+    last_num = 0
+    for s in last_section[::-1]:
+        match = re.match(r"^(\d+)\.", str(s).strip())
+        if match:
+            last_num = int(match.group(1))
+            break
+    new_section = df['section'].dropna().iloc[-1] if not df['section'].dropna().empty else "General"
+
+    # Determine next point_check number
+    def extract_point_number(val):
+        try:
+            return int(str(val).strip().split(".")[0])
+        except:
+            return 0
+
+    point_nums = df["point_check"].dropna().apply(extract_point_number)
+    max_point = point_nums.max() if not point_nums.empty else 0
+    new_point_check = str(max_point + 1)
+
+    # Determine jenis_pengecekan list
+    all_pengecekan = df_cmm["jenis_pengecekan"].dropna().tolist()
+    flat_list = []
+    for item in all_pengecekan:
+        if isinstance(item, list):
+            flat_list.extend(item)
+        elif isinstance(item, str):
+            flat_list.extend([s.strip() for s in item.split(",") if s.strip()])
+    clean_list = list(set(flat_list)) if flat_list else ["-"]
+
+    # Build the new row
+    new_row = {
+        "section": new_section,
+        "point_check": new_point_check,
+        "jenis_point": "Tanpa Ukur",
+        "item_check": "Hasil CMM",
+        "standard": "Masuk range toleransi",
+        "catatan": "-",
+        "jenis_pengecekan": clean_list,
+        "control_method": "CMM",
+        "std_value": None,
+        "std_min": None,
+        "std_max": None,
+        "status": "valid"
+    }
+
+    # Match all columns, fill missing with "-"
+    for col in df.columns:
+        if col not in new_row:
+            new_row[col] = "-"
+
+    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    return df
