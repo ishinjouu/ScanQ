@@ -1,6 +1,16 @@
 import pandas as pd
 import re
+import numpy as np
 from difflib import SequenceMatcher
+
+def sanitize_for_json(value):
+    if isinstance(value, float) and (pd.isna(value) or not np.isfinite(value)):
+        return None
+    if isinstance(value, list):
+        return [sanitize_for_json(v) for v in value]
+    if isinstance(value, dict):
+        return {k: sanitize_for_json(v) for k, v in value.items()}
+    return value
 
 # catatan - tambahan dari standard ke kolom catatan
 def copy_special_measurements_to_note(row):
@@ -9,19 +19,12 @@ def copy_special_measurements_to_note(row):
     jenis_point = str(row.get("jenis_point", "")).strip()
     if jenis_point not in ["Dengan Ukur", "Dengan CMM"]:
         return row
-
-    # min_max_match = re.search(r"\b([Mm]in|[Mm]ax)\s*\d+(?:\.\d+)?", standard)
-    # if min_max_match:
-    #     tag = f"[{min_max_match.group(0).strip()}]"
-    #     if tag not in catatan:
-    #         catatan += f" {tag}"
-    # === Min/Max biasa tanpa simbol ===
-    min_max_match = re.search(r"\b([Mm]in|[Mm]ax)\.?\s*[Ø°μ]?\s*\d+(?:\.\d+)?\s*[A-Za-z]+",standard)
-    if min_max_match:
-        tag = f"[{min_max_match.group(0).strip()}]"
-        if tag not in catatan:
-            catatan += f" {tag}"
-
+    # === Min/Max ===
+    minmax_matches = re.findall(r"(?:min|max)\s*[A-Za-z]*\s*\d+(?:\.\d+)?", standard, flags=re.IGNORECASE)
+    for item in minmax_matches:
+        cleaned = f"[{item.strip()}]"
+        if cleaned not in catatan:
+            catatan += f" {cleaned}"
     size_patterns = [
         r"[Ø°]\d+(?:\.\d+)?\s*±\s*[+−-]?\d+(?:\.\d+)?",                                     # Ø10 ±0.1 atau °10 ± 0.5
         r"[Ø°]\d+(?:\.\d+)?\s*\(\s*\d+(?:\.\d+)?\s*~\s*[+−-]?\d+(?:\.\d+)?\s*\)",           # Ø6.1 ( 0 ~ +0.1 )
@@ -35,38 +38,32 @@ def copy_special_measurements_to_note(row):
     for pattern in size_patterns:
         match = re.search(pattern, standard)
         if match:
-            ukuran_found = match.group(0).strip().replace("[", "").replace("]", "")
-            break  
-
-    if ukuran_found and ukuran_found not in catatan:
-        catatan += f" {ukuran_found}"
-
+            ukuran_found = match.group(0).strip()
+            break
+    if ukuran_found:
+        if ukuran_found not in catatan:
+            catatan += f" {ukuran_found}"
     row["catatan"] = catatan.strip()
     return row
 
 # --- isi kosong di kolom catatan berdasarkan grup point_check dan item_check ---
 def fill_empty_catatan_from_group(df):
     df = df.copy()
-
     for idx, row in df.iterrows():
         if row.get("jenis_point") not in ["Dengan Ukur", "Dengan CMM"]:
             continue
         if row.get('catatan') and row['catatan'].strip() not in ["-", ""]:
             continue
-
         item = row['item_check']
         point_prefix = re.match(r'^(\d+[a-zA-Z]*)', str(row['point_check']))
         point_prefix = point_prefix.group(1) if point_prefix else ""
-
         for j, ref_row in df.iterrows():
             if j == idx:
                 continue
             if ref_row.get("jenis_point") not in ["Dengan Ukur", "Dengan CMM"]:
                 continue
-
             ref_prefix = re.match(r'^(\d+[a-zA-Z]*)', str(ref_row['point_check']))
             ref_prefix = ref_prefix.group(1) if ref_prefix else ""
-
             if (
                 ref_prefix == point_prefix and
                 isinstance(ref_row['item_check'], str)
@@ -75,7 +72,6 @@ def fill_empty_catatan_from_group(df):
                 if sim >= 0.8 and ref_row['catatan']:
                     df.at[idx, 'catatan'] = ref_row['catatan']
                     break
-
     return df
 
 # Format standard ke std_value, std_min, std_max -------------------------------------------------------------------------
@@ -120,11 +116,6 @@ def parse_standard_value(row):
         return pd.Series([nominal, -delta, delta], index=["std_value", "std_min", "std_max"])
 
     # 5. Min/Max
-    # match5 = re.search(r'\b(Min|Max)\s*(\d+(?:\.\d+)?)\b', standard, re.IGNORECASE)
-    # if match5:
-    #     kind = match5.group(1).lower()
-    #     value = float(match5.group(2))
-    #     return pd.Series([0, value if kind == "min" else 0, value if kind == "max" else 0], index=["std_value", "std_min", "std_max"])
     match5 = re.search(r'\b(Min|Max)\.?\s*(\d+(?:\.\d+)?)', standard, re.IGNORECASE)
     if match5:
         kind = match5.group(1).lower()
@@ -132,6 +123,15 @@ def parse_standard_value(row):
         if kind == "min":
             return pd.Series([value, 0, 99999], index=["std_value", "std_min", "std_max"])
         else:  # max
+            return pd.Series([0, 0, value], index=["std_value", "std_min", "std_max"])
+    # 5b. Max Rz 25  |  Min Ra 3.2  |  Max Rmax 5
+    match5b = re.search(r'\b(Min|Max)\s+[A-Za-z]{1,4}\s*(\d+(?:\.\d+)?)', standard, re.IGNORECASE)
+    if match5b:
+        kind = match5b.group(1).lower()
+        value = float(match5b.group(2))
+        if kind == "min":
+            return pd.Series([value, 0, 99999], index=["std_value", "std_min", "std_max"])
+        else:
             return pd.Series([0, 0, value], index=["std_value", "std_min", "std_max"])
 
     # 6. ( Reff : 0 ~ +0.5 )
@@ -266,7 +266,7 @@ def parse_standard_value(row):
 
     return pd.Series([None, None, None], index=["std_value", "std_min", "std_max"])
 
-# dengan CMM -------------------------------------------------------------------------------------------------
+# Dengan CMM -------------------------------------------------------------------------------------------------
 def append_cmm_summary_row(df):
     # Filter only CMM rows
     df_cmm = df[df["jenis_point"] == "Dengan CMM"]

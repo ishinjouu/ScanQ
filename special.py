@@ -1,8 +1,11 @@
-import streamlit as st
 import pdfplumber
 import pandas as pd
 import numpy as np
 import re
+try:
+    import streamlit as st
+except:
+    st = None
 from utils import (
     copy_special_measurements_to_note,
     parse_standard_value,
@@ -74,7 +77,8 @@ def extract_table_from_pdf(file):
                     merged_df = pd.concat(page_tables, axis=0, ignore_index=True)
                     all_dataframes.append(merged_df)
                 except Exception as e:
-                    st.warning(f"⚠️ Gagal merge tabel di halaman {page_num+1}: {e}")
+                    if st:
+                        st.warning(f"⚠️ Gagal merge tabel di halaman {page_num+1}: {e}")
     normalized_tables = []
     for df in all_dataframes:
         if df.shape[1] < max_columns:
@@ -169,6 +173,26 @@ def bersihkan_dataframe(df):
         if not col_insp_method:
             col_insp_method = get_col(data_df, ["patrol"]) or get_col(data_df, ["normal"])
 
+        # =============================================
+        # FALLBACK KHUSUS UNTUK FORMAT INCOMING (2)
+        # =============================================
+        incoming2_kw = ["patrol", "out going", "incoming", "q time", "100%"]
+        is_incoming2 = any(
+            any(k in c.lower() for k in incoming2_kw)
+            for c in data_df.columns
+        )
+        if is_incoming2:
+            for c in data_df.columns:
+                cl = c.lower()
+                if "patrol" in cl and "method" in cl:
+                    col_vjs = c     # Verifikasi Job Setup (Method)
+                elif ("out going" in cl or "incoming" in cl) and "method" in cl:
+                    col_insp_method = c   # Insp Normal (Method)
+                elif "q time" in cl and "method" in cl:
+                    col_qt = c     # Q Time (Method)
+                elif "100%" in cl and "method" in cl:
+                    col_op = c     # 100% (Method)
+        # ===============================================
 
         insp_cols = [c for c in data_df.columns if "insp" in c.lower() and "normal" in c.lower()]
         col_insp_method = None
@@ -456,7 +480,8 @@ def hapus_footer(df):
         if any(sig in row_text for sig in footer_signals):
             drop_indexes.append(idx)
     if drop_indexes:
-        st.info(f"🧹 Menghapus {len(drop_indexes)} baris footer")
+        if st:
+            st.info(f"🧹 Menghapus {len(drop_indexes)} baris footer")
         df = df.drop(index=drop_indexes)
     df = df.replace(r"^\s*$", np.nan, regex=True).dropna(how="all")
     df = df.reset_index(drop=True)

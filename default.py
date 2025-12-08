@@ -1,14 +1,18 @@
-import streamlit as st
 import pdfplumber
 import pandas as pd
 import numpy as np
 import re
+try:
+    import streamlit as st
+except:
+    st = None
 from difflib import get_close_matches
 from utils import (
     append_cmm_summary_row,
     copy_special_measurements_to_note,
     parse_standard_value,
-    fill_empty_catatan_from_group
+    fill_empty_catatan_from_group,
+    sanitize_for_json
 )
 
 def fix_split_standard_issue(row):
@@ -55,14 +59,14 @@ def fix_split_standard_issue(row):
     return row
 
 # sanitazing json list from jenis_pengecekan
-def sanitize_for_json(value):
-    if isinstance(value, float) and (pd.isna(value) or not np.isfinite(value)):
-        return None
-    if isinstance(value, list):
-        return [sanitize_for_json(v) for v in value]
-    if isinstance(value, dict):
-        return {k: sanitize_for_json(v) for k, v in value.items()}
-    return value
+# def sanitize_for_json(value):
+#     if isinstance(value, float) and (pd.isna(value) or not np.isfinite(value)):
+#         return None
+#     if isinstance(value, list):
+#         return [sanitize_for_json(v) for v in value]
+#     if isinstance(value, dict):
+#         return {k: sanitize_for_json(v) for k, v in value.items()}
+#     return value
 
 
 # if string, then remove \n, '' & turn into lowercase
@@ -103,8 +107,7 @@ def reverse_text(text):
     text = text.replace('\n', ' ')
     return text[::-1].strip()
 
-# ---------- PDF Table Extraction ----------
-
+# ---------- PDF Table Extraction -------------------------------------------------------------//
 def pisahkan_item_dan_extra(df):
     if "Item" in df.columns and "_2" not in df.columns:
         extracted = df["Item"].str.extract(r"^(.*?)(\s*\(E\d+\))$")
@@ -175,7 +178,8 @@ def extract_table_from_pdf(file):
                     merged_df = pd.concat(page_tables, axis=0, ignore_index=True)
                     all_dataframes.append(merged_df)
                 except Exception as e:
-                    st.warning(f"⚠️ Gagal merge tabel di halaman {page_num+1}: {e}")
+                    if st:
+                        st.warning(f"⚠️ Gagal merge tabel di halaman {page_num+1}: {e}")
 
     normalized_tables = []
     for df in all_dataframes:
@@ -231,8 +235,7 @@ def group_rows_by_item(df):
 
     return pd.DataFrame(grouped_rows)
 
-# ---------- Footer & Flip Cleaners ----------
-
+# ---------- Footer & Flip Cleaners -------------------------------------------------------------------------------------------//
 def hapus_footer(df):
     keywords = ["keputusan", "keterangan", "approved", "checked", "disetujui", "diperiksa", "dibuat", "nama", "tanggal", "ttd"]
     cleaned_pages = []
@@ -247,10 +250,12 @@ def hapus_footer(df):
                 footer_start_idx = idx
                 break
         if footer_start_idx is not None:
-            st.info(f"🧹 Footer detected at index {footer_start_idx}. Removing it.")
+            if st:
+                st.info(f"🧹 Footer detected at index {footer_start_idx}. Removing it.")
             page_df = page_df.loc[:footer_start_idx - 1].copy()
         else:
-            st.info("✅ No footer found.")
+            if st:
+                st.info("✅ No footer found.")
         cleaned_pages.append(page_df)
     final_df = pd.concat(cleaned_pages, ignore_index=True)
     return final_df
@@ -280,7 +285,6 @@ def detect_and_fix_reversed_columns(df):
             return replacements[norm]
         else:
             return col_name.strip()
-
     new_columns = [try_fix_header(col) for col in df.columns]
     df.columns = new_columns
     return df
@@ -289,7 +293,6 @@ def fill_patrol_column(df):
     df["_is_section"] = df["No."].astype(str).str.match(r'^\s*(I|II|III|IV|V|VI|VII|VIII|IX|X)\b')
     last_valid_patrol = None
     patrol_filled = []
-
     for is_section, patrol in zip(df["_is_section"], df["Patrol"]):
         if is_section:
             patrol_filled.append(patrol)
@@ -309,10 +312,12 @@ def fill_setup_from_patrol(df):
     if "Set Up" not in df.columns:
         df["Set Up"] = None
     if "Patrol" not in df.columns:
-        st.warning("🛑 Kolom 'Patrol' tidak ditemukan.")
+        if st:
+            st.warning("🛑 Kolom 'Patrol' tidak ditemukan.")
         return df
     if "No." not in df.columns:
-        st.warning("🛑 Kolom 'No.' tidak ditemukan.")
+        if st:
+            st.warning("🛑 Kolom 'No.' tidak ditemukan.")
         return df
 
     df["_is_section"] = df["No."].astype(str).str.match(r'^\s*(I|II|III|IV|V|VI|VII|VIII|IX|X)\b')
@@ -357,12 +362,18 @@ def fill_standard_from_job_setup(df):
 def normalisasi_m_notasi(standard):
     if not isinstance(standard, str):
         return standard
+    text = standard
+    # (M6 x 1.0) skip
+    thread_pattern = r'\bM\d+\s*[xX×]\s*\d+(\.\d+)?'
+    if re.search(thread_pattern, text):
+        return standard
+    # if not:
     pattern = r'\b[Mm]\s?-?\s?(\d{1,2})(?![\d.±°])\b'
-    match = re.search(pattern, standard)
+    match = re.search(pattern, text)
     if match:
         angka = match.group(1)
-        standard = re.sub(pattern, f'[M{angka}]', standard)
-    return standard
+        text = re.sub(pattern, f'[M{angka}]', text)
+    return text
 
 def deduplicate_words(text):
     if not isinstance(text, str):
@@ -393,13 +404,15 @@ def fill_down_except_romawi(df, kolom_target):
 
 def gabungkan_kolom_item(df, kolom_Item='Item'):
     if kolom_Item not in df.columns:
-        st.warning(f"🛑 Kolom '{kolom_Item}' tidak ditemukan.")
+        if st:
+            st.warning(f"🛑 Kolom '{kolom_Item}' tidak ditemukan.")
         return df
 
     idx_Item = df.columns.get_loc(kolom_Item)
 
     if idx_Item + 1 >= len(df.columns):
-        st.warning("🛑 Tidak ada kolom setelah kolom Item.")
+        if st:
+            st.warning("🛑 Tidak ada kolom setelah kolom Item.")
         return df
 
     kolom_1 = df.columns[idx_Item + 1]
@@ -410,7 +423,8 @@ def gabungkan_kolom_item(df, kolom_Item='Item'):
 
     if gabung_kolom_1:
         if gabung_kolom_2 and kolom_2 in df.columns:
-            st.info(f"🔧 Gabungkan isi dari dua kolom setelah '{kolom_Item}' → format: 'Item (Tambahan1 - Tambahan2)'")
+            if st:
+                st.info(f"🔧 Gabungkan isi dari dua kolom setelah '{kolom_Item}' → format: 'Item (Tambahan1 - Tambahan2)'")
 
             def gabung(val_Item, val1, val2):
                 vals = [str(v).strip() for v in [val1, val2] if pd.notna(v) and str(v).strip()]
@@ -421,7 +435,8 @@ def gabungkan_kolom_item(df, kolom_Item='Item'):
             df[kolom_Item] = df.apply(lambda row: gabung(row[kolom_Item], row[kolom_1], row[kolom_2]), axis=1)
             df.drop(columns=[kolom_1, kolom_2], inplace=True)
         else:
-            st.info(f"🔧 Gabungkan isi dari kolom tak bernama setelah '{kolom_Item}' → format: 'Item (Tambahan)'")
+            if st:
+                st.info(f"🔧 Gabungkan isi dari kolom tak bernama setelah '{kolom_Item}' → format: 'Item (Tambahan)'")
 
             def gabung(val_Item, val_samping):
                 if pd.notna(val_samping) and str(val_samping).strip() != '':
@@ -434,7 +449,8 @@ def gabungkan_kolom_item(df, kolom_Item='Item'):
         # Rename any remaining unnamed columns
         df.columns = [f"col_{i}" if not c or pd.isna(c) else c for i, c in enumerate(df.columns)]
     else:
-        st.info("ℹ️ Kolom setelah 'Item' punya nama, tidak digabung.")
+        if st:
+            st.info("ℹ️ Kolom setelah 'Item' punya nama, tidak digabung.")
 
     return df
 
@@ -464,7 +480,7 @@ def normalisasi_patrol(patrol_input):
             "tfihs / x1 tfihs / x1", "tfihs / x1 tfihs / x1 tfihs / x1", "1x / shift"
         ],
         "Patrol 1x/Day": [
-            "1x/day", "day/1x", "1 day", "1x per day", "per day", "yad/x1", "x1/yad"
+            "1x/day", "day/1x", "1 day", "1x per day", "per day", "yad/x1", "x1/yad", "1x   day"
         ]
     }
     hasil = set()
@@ -497,10 +513,6 @@ def isi_label_abjad_di_antara(df, kolom='Item', No='No.'):
     return df
 
 def gabungkan_kolom_mirip(df, target_col, alias_list):
-    """
-    Menggabungkan beberapa kolom dengan nama typo/mirip ke dalam satu kolom resmi (target_col).
-    Nilai yang tidak kosong akan diprioritaskan dari kanan ke kiri (yang paling kanan akan menimpa).
-    """
     if target_col not in df.columns:
         df[target_col] = None
     for col in alias_list:
@@ -526,7 +538,8 @@ def bersihkan_dataframe(df):
         day_synonyms = ["day", "yad"]
 
         # Cari kombinasi x1 / x2 / x3 DAN kata shift/day (dalam bentuk apapun)
-        found_x = re.search(r"x\d+", teks)
+        # found_x = re.search(r"x\d+", teks)
+        found_x = re.search(r"(?:\d+x|x\d+)", teks)
         if found_x:
             for syn in shift_synonyms:
                 if syn in teks:
@@ -540,9 +553,11 @@ def bersihkan_dataframe(df):
         if "No." in df.columns:
             df["No."] = df["No."].astype(str).str.replace(r'^(\d+)\s*(\w*)\.*', r'\1\2', regex=True)
         else:
-            st.warning("🛑 Column 'No.' not found.")
+            if st:
+                st.warning("🛑 Column 'No.' not found.")
     except Exception as e:
-        st.warning(f"Cleaning 'No.' column failed: {e}")
+        if st:
+            st.warning(f"Cleaning 'No.' column failed: {e}")
 
     df.dropna(how='all', inplace=True)
     df = fill_setup_from_patrol(df)
@@ -631,7 +646,6 @@ SECTION_REGEX = r'^\s*(I{1,3}|IV|V|VI{0,3}|VII{0,3}|VIII|IX|X)\s*[\.\-–]\s+.+'
 
 def is_section_row(row):
     first_col = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
-    print(f"[DEBUG] Cek kolom 1 section: {first_col}")
     return bool(re.match(SECTION_REGEX, first_col, re.IGNORECASE))
 
 def extract_section_title(row):
@@ -688,7 +702,8 @@ def move_single_caps_to_note(row):
         if single_cap in ["F", "M", "Q"]:
             tags_found.add(f"[{single_cap}]")
     # Hapus huruf kapital dari kolom standard
-    standard = re.sub(r'(^|\s)([A-Z])(?![\w.])($|\s)', ' ', standard).strip()
+    # standard = re.sub(r'(^|\s)([A-Z])(?![\w.])($|\s)', ' ', standard).strip()
+    standard = re.sub(r'\b([A-Z])\b', ' ', standard).strip()
 
     # Cek huruf kapital tunggal di item_check dalam konteks akhir kalimat / spasi
     matches_item = re.findall(r'\b([A-Z])\b', item_check)
@@ -714,9 +729,9 @@ def normalize_note_tags(catatan):
         tag_clean = tag.strip()
         if tag_clean in ["F", "M", "Q"]:
             allowed_tags.append(f"[{tag_clean}]")
-        elif re.match(r"(?i)^min\s+\d+(\.\d+)?$", tag_clean):
+        elif re.match(r"(?i)^min\s+.+$", tag_clean):
             allowed_tags.append(f"[{tag_clean}]")
-        elif re.match(r"(?i)^max\s+\d+(\.\d+)?$", tag_clean):
+        elif re.match(r"(?i)^max\s+.+$", tag_clean):
             allowed_tags.append(f"[{tag_clean}]")
 
     for tag in all_tags:
@@ -737,7 +752,7 @@ def normalize_note_tags(catatan):
 
     return result.strip()
 
-# ----------- Validsi -----------
+# ----------- Validsi ----------------------------------------------------------------------------
 def find_mid_sequence_breaks(df):
     suspicious_indexes = []
     pattern = r"\(E(\d+)\)"
@@ -770,8 +785,8 @@ def find_mid_sequence_breaks(df):
                     suspicious_indexes.append(idx)
 
     return suspicious_indexes
-    # ----------- Validsi -----------
 
+# ----------- Validsi -------------------------------------------------------------------------------
 def transform_to_final_format(df):
     df.columns = [col.strip().replace('\n', ' ').title() for col in df.columns]
     if "Control Method" not in df.columns:
@@ -789,7 +804,10 @@ def transform_to_final_format(df):
     df["Control Method"] = df["Control Method"].apply(bersihkan_control_method_bocor)
     df = df.replace(to_replace=["", "nan", "None"], value=np.nan)
 
-    dengan_ukur_keywords = ["caliper", "hg", "depth cal", "pitch dial", "rough. t", "hitung", "depth clp", "height g", "dial g"]
+    dengan_ukur_keywords = [
+        "caliper", "hg", "depth cal", "pitch dial", "rough. t", "hitung", "depth clp", "height g", "dial g",
+        "dial clp.", "crm", "id micro", "rough t", "blog g + dept c.", "depth c."
+    ]
     tanpa_ukur_keywords = [
         "visual", "pg", "snap g.", "visual & punch", "visual + kikir", "visual & kikir",
         "machining test", "visual ( reff. master rough.)", "insp. jig", "finishing test"
@@ -975,6 +993,11 @@ def transform_to_final_format(df):
     def move_m_from_standard_to_note(row):
         std = str(row["standard"]).strip()
         catatan = str(row["catatan"]).strip()
+
+        # ❌ Jangan eksekusi untuk thread metric
+        if re.search(r'\bM\d+\s*[xX×]\s*\d+(\.\d+)?', std):
+            return row
+
         match = re.findall(r'\[M\d{1,2}\]', std)
         if match:
             for m_tag in match:
@@ -1044,7 +1067,7 @@ def transform_to_final_format(df):
                 suspicious_indexes.append(idx)
         return suspicious_indexes
    
-    # ---------------------- validasi ----------------------
+    # ---------------------- validasi ----------------------------------------------------------------
     def find_invalid_format_rows(df):
         invalid_indexes = []
 
@@ -1059,7 +1082,7 @@ def transform_to_final_format(df):
                 else:
                     jenis_pengecekan = [str(jenis_pengecekan).strip()]
 
-            # ❌ Kalau ADA "nan" di dalam list, maka baris invalid
+            # Kalau ADA "nan" di dalam list, maka baris invalid
             if any(str(j).strip().lower() == "nan" for j in jenis_pengecekan):
                 invalid_indexes.append(idx)
 
@@ -1074,7 +1097,7 @@ def transform_to_final_format(df):
                 if len(tokens) <= 3:
                     suspicious_indexes.append(idx)
         return suspicious_indexes
-    # ---------------------- validasi ----------------------
+    # End Validasi ------------------------------------------------------------------------------------
 
     parsed_std = df_result.apply(parse_standard_value, axis=1)
     df_result[["std_value", "std_min", "std_max"]] = parsed_std[["std_value", "std_min", "std_max"]]
