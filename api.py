@@ -1,7 +1,6 @@
 from flask import Flask, jsonify, request, Response
 from collections import OrderedDict
 import json
-# from app import extract_table_from_pdf, bersihkan_dataframe, transform_to_final_format, sanitize_for_json
 from app import load_processor_module
 from utils import sanitize_for_json
 

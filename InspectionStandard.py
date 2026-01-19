@@ -144,82 +144,27 @@ def bersihkan_dataframe(df):
         col_qt   = get_col(data_df, ["q", "time", "method"])
         col_op = get_col(data_df, ["100", "method"]) or get_col(data_df, ["operator", "method"])
 
-        # Fallback for - Incoming
+        # ----------------------------------------------------------------
+        # Deteksi kolom Insp. Normal (Method & Frek)
+        # ----------------------------------------------------------------
         col_insp_method = None
         col_insp_frek = None
-        insp_cols = [c for c in data_df.columns if "insp" in c.lower() and "normal" in c.lower()]
-        if insp_cols:
-            for c in insp_cols:
-                cl = c.lower()
-                if "method" in cl and "frek" not in cl:
-                    col_insp_method = c
-                elif "frek" in cl and "method" not in cl:
-                    col_insp_frek = c
 
-            if col_insp_method and not col_insp_frek:
-                right_index = list(data_df.columns).index(col_insp_method) + 1
-                if right_index < len(data_df.columns):
-                    right_name = data_df.columns[right_index].lower()
-                    if "frek" in right_name:
-                        col_insp_frek = data_df.columns[right_index]
-            elif not col_insp_method and insp_cols:
-                if re.search(r"method.*frek|frek.*method", insp_cols[0].lower()):
-                    col_insp_method = insp_cols[0]
-                    col_insp_frek = insp_cols[0]
+        for i, c in enumerate(data_df.columns):
+            lc = c.lower().replace(".", " ")
+            if "insp" in lc and "normal" in lc and "method" in lc:
+                col_insp_method = c
+                # ambil kolom kanan sebagai frek, pastikan bukan Verifikasi Job Setup
+                if i + 1 < len(data_df.columns):
+                    next_col = data_df.columns[i + 1]
+                    if "verifikasi" not in next_col.lower():  
+                        col_insp_frek = next_col
+                break
 
-        # fallback if fail detection
-        if not col_vjs:
-            col_vjs = get_col(data_df, ["incoming"]) or get_col(data_df, ["job"])
-        if not col_qt:
-            col_qt = get_col(data_df, ["qtime"]) or get_col(data_df, ["qt"])
-        if not col_op:
-            col_op = get_col(data_df, ["100"]) or get_col(data_df, ["100%"])
-        if not col_insp_method:
-            col_insp_method = get_col(data_df, ["patrol"]) or get_col(data_df, ["normal"])
-
-        # =============================================
-        # FALLBACK KHUSUS UNTUK FORMAT INCOMING (2)
-        # =============================================
-        incoming2_kw = ["patrol", "out going", "incoming", "q time", "100%"]
-        is_incoming2 = any(
-            any(k in c.lower() for k in incoming2_kw)
-            for c in data_df.columns
-        )
-        if is_incoming2:
-            for c in data_df.columns:
-                cl = c.lower()
-                if "patrol" in cl and "method" in cl:
-                    col_vjs = c     # Verifikasi Job Setup (Method)
-                elif ("out going" in cl or "incoming" in cl) and "method" in cl:
-                    col_insp_method = c   # Insp Normal (Method)
-                elif "q time" in cl and "method" in cl:
-                    col_qt = c     # Q Time (Method)
-                elif "100%" in cl and "method" in cl:
-                    col_op = c     # Check 100% (Method)
-        # ===============================================
-
-        insp_cols = [c for c in data_df.columns if "insp" in c.lower() and "normal" in c.lower()]
-        col_insp_method = None
-        col_insp_frek = None
-        if insp_cols:
-            for c in insp_cols:
-                cl = c.lower()
-                if "method" in cl and "frek" not in cl:
-                    col_insp_method = c
-                elif "frek" in cl and "method" not in cl:
-                    col_insp_frek = c
-
-            # fallback: kalau cuma ada 1 kolom tapi headernya gabung “Method Frek.”
-            if col_insp_method and not col_insp_frek:
-                right_index = list(data_df.columns).index(col_insp_method) + 1
-                if right_index < len(data_df.columns):
-                    right_name = data_df.columns[right_index].lower()
-                    if "frek" in right_name:
-                        col_insp_frek = data_df.columns[right_index]
-            elif not col_insp_method and insp_cols:
-                if re.search(r"method.*frek|frek.*method", insp_cols[0].lower()):
-                    col_insp_method = insp_cols[0]
-                    col_insp_frek = insp_cols[0]
+        # fallback jika header Method+Frek digabung dalam satu kolom
+        if col_insp_method and not col_insp_frek:
+            if re.search(r"method.*frek|frek.*method", col_insp_method.lower()):
+                col_insp_frek = col_insp_method
 
         # mapping
         cols_map = {
@@ -229,6 +174,7 @@ def bersihkan_dataframe(df):
             "Standard": col_std,
             "Verifikasi Job Set Up (Method)": col_vjs,
             "Insp. Normal (Method)": col_insp_method,
+            "Insp. Normal (Frek)": col_insp_frek,
             "Q Time (Method)": col_qt,
             "100% (Method)": col_op,
         }

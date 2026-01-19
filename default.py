@@ -12,7 +12,11 @@ from utils import (
     copy_special_measurements_to_note,
     parse_standard_value,
     fill_empty_catatan_from_group,
-    sanitize_for_json
+    isi_label_abjad_di_antara,
+    sanitize_for_json,
+    dengan_ukur_keywords,
+    tanpa_ukur_keywords,
+    dengan_cmm_keywords
 )
 
 def fix_split_standard_issue(row):
@@ -58,17 +62,6 @@ def fix_split_standard_issue(row):
     row["Standard"] = standard.strip()
     return row
 
-# sanitazing json list from jenis_pengecekan
-# def sanitize_for_json(value):
-#     if isinstance(value, float) and (pd.isna(value) or not np.isfinite(value)):
-#         return None
-#     if isinstance(value, list):
-#         return [sanitize_for_json(v) for v in value]
-#     if isinstance(value, dict):
-#         return {k: sanitize_for_json(v) for k, v in value.items()}
-#     return value
-
-
 # if string, then remove \n, '' & turn into lowercase
 def normalize_text(text):
     if not isinstance(text, str):
@@ -91,6 +84,9 @@ def maybe_flip_text(text):
         "portal": "Patrol",
         "up": "Up",
         "1x/day": "Patrol 1x/Day",
+        "yad   scp 1": "Patrol 1x/Day",
+        "yad scp 1": "Patrol 1x/Day",
+        "1 pcs day": "Patrol 1x/Day",
         "shift": "Shift",
         "allpointifjobsetup": "All Point If Job Set Up",
         "4allpointifjobsetup": "All Point If Job Set Up"
@@ -359,8 +355,11 @@ def fill_standard_from_job_setup(df):
                 df.at[idx, "Standard"] = last_valid_std
     return df
 
-def normalisasi_m_notasi(standard):
+# def normalisasi_m_notasi(standard):
+def normalisasi_m_notasi(standard, control_method=None, jenis_point=None):
     if not isinstance(standard, str):
+        return standard
+    if control_method != "Thread G." or jenis_point != "Tanpa Ukur":
         return standard
     text = standard
     # (M6 x 1.0) skip
@@ -480,7 +479,8 @@ def normalisasi_patrol(patrol_input):
             "tfihs / x1 tfihs / x1", "tfihs / x1 tfihs / x1 tfihs / x1", "1x / shift"
         ],
         "Patrol 1x/Day": [
-            "1x/day", "day/1x", "1 day", "1x per day", "per day", "yad/x1", "x1/yad", "1x   day"
+            "1x/day", "day/1x", "1 day", "1x per day", "per day", "yad/x1", "x1/yad", "1x   day", "yad scp 1",
+            "yad   scp 1", 
         ]
     }
     hasil = set()
@@ -489,28 +489,6 @@ def normalisasi_patrol(patrol_input):
             if variasi in teks:
                 hasil.add(kategori)
     return ", ".join(sorted(hasil))
-
-# label bolong b. dll
-def isi_label_abjad_di_antara(df, kolom='Item', No='No.'):
-    pola = re.compile(r'^([a-zA-Z])\.\s*(.+)$')
-    new_items = []
-    last_label = None
-    for i in range(len(df)):
-        if pd.notna(df.at[i, No]):
-            last_label = None
-
-        item = str(df.at[i, kolom]).strip()
-        match = pola.match(item)
-        if match:
-            last_label = match.group(1)
-            new_items.append(item)
-        else:
-            if last_label:
-                new_items.append(f"{last_label}. {item}")
-            else:
-                new_items.append(item)
-    df[kolom] = new_items
-    return df
 
 def gabungkan_kolom_mirip(df, target_col, alias_list):
     if target_col not in df.columns:
@@ -528,17 +506,11 @@ def bersihkan_dataframe(df):
     def perbaiki_patrol_mentah(teks):
         if not isinstance(teks, str):
             return teks
-
-        # Normalisasi dasar
         teks = teks.lower()
         teks = re.sub(r"\s+", " ", teks).strip()
-        teks = teks.replace("/", " ")  # ubah '/' jadi spasi biar regex gampang
-
+        teks = teks.replace("/", " ") 
         shift_synonyms = ["shift", "tfihs"]
         day_synonyms = ["day", "yad"]
-
-        # Cari kombinasi x1 / x2 / x3 DAN kata shift/day (dalam bentuk apapun)
-        # found_x = re.search(r"x\d+", teks)
         found_x = re.search(r"(?:\d+x|x\d+)", teks)
         if found_x:
             for syn in shift_synonyms:
@@ -547,7 +519,6 @@ def bersihkan_dataframe(df):
             for syn in day_synonyms:
                 if syn in teks:
                     return "Patrol 1x/Day"
-
         return teks
     try:
         if "No." in df.columns:
@@ -629,7 +600,7 @@ def bersihkan_dataframe(df):
         df["patrol"] = df["patrol"].apply(normalisasi_patrol)
     # if = kolomnya ada 2
     df.columns = [col.strip().lower().replace('\n', ' ') for col in df.columns]
-    df = gabungkan_kolom_mirip(df, "control_method", ["control method", "contorl method", "contro metho"])
+    df = gabungkan_kolom_mirip(df, "control_method", ["control method", "contorl methodcla", "contro metho"])
     df.columns = [col.replace('_', ' ').title() for col in df.columns]
     # --------- Backup: Setup dan Patrol Default ---------
     if "Set Up" not in df.columns:
@@ -640,7 +611,7 @@ def bersihkan_dataframe(df):
 
     return df
 
-# ---------- Transform ke Format Final ----------
+# ---------- Transform ke Format Final ---------------------------------------------------------------------------------//
 
 SECTION_REGEX = r'^\s*(I{1,3}|IV|V|VI{0,3}|VII{0,3}|VIII|IX|X)\s*[\.\-–]\s+.+'
 
@@ -692,30 +663,23 @@ def move_single_caps_to_note(row):
     standard = str(row.get("standard", "")).strip()
     item_check = str(row.get("item_check", "")).strip()
     catatan = str(row.get("catatan", "")).strip()
-
     tags_found = set()
-
     # Cek huruf kapital tunggal di kolom standard
     matches_standard = re.findall(r'(^|\s)([A-Z])(?![\w.])($|\s)', standard)
     for match in matches_standard:
         single_cap = match[1]
         if single_cap in ["F", "M", "Q"]:
             tags_found.add(f"[{single_cap}]")
-    # Hapus huruf kapital dari kolom standard
-    # standard = re.sub(r'(^|\s)([A-Z])(?![\w.])($|\s)', ' ', standard).strip()
-    standard = re.sub(r'\b([A-Z])\b', ' ', standard).strip()
-
+    standard = re.sub(r'\b([A-WYZ])\b', ' ',standard).strip()
     # Cek huruf kapital tunggal di item_check dalam konteks akhir kalimat / spasi
     matches_item = re.findall(r'\b([A-Z])\b', item_check)
     for single_cap in matches_item:
         if single_cap in ["F", "M", "Q"]:
             tags_found.add(f"[{single_cap}]")
-
     # Tambahkan tag ke catatan (hindari duplikat)
     for tag in sorted(tags_found):
         if tag not in catatan:
             catatan = f"{catatan} {tag}".strip()
-
     row["standard"] = standard
     row["catatan"] = catatan
     return row
@@ -752,6 +716,24 @@ def normalize_note_tags(catatan):
 
     return result.strip()
 
+# Mapping 100% (Alt + 224 = α) & (Alt + 228 = Σ) symbols to jenis_pengecekan
+def apply_symbol_indicators_to_jenis(row):
+    item_check = str(row.get("item_check", "")).strip()
+    jenis = row.get("jenis_pengecekan", [])
+
+    if isinstance(jenis, str):
+        jenis = [jenis] if jenis else []
+    elif not isinstance(jenis, list):
+        jenis = list(jenis)
+
+    if "α" in item_check and "Q-Time" not in jenis:
+        jenis.append("Q-Time")
+
+    if "Σ" in item_check and "Check 100%" not in jenis:
+        jenis.append("Check 100%")
+
+    return jenis
+
 # ----------- Validsi ----------------------------------------------------------------------------
 def find_mid_sequence_breaks(df):
     suspicious_indexes = []
@@ -764,7 +746,6 @@ def find_mid_sequence_breaks(df):
         if base not in grouped:
             grouped[base] = []
         grouped[base].append((idx, item, int(match.group(1)) if match else None))
-
     for base, items in grouped.items():
         items.sort(key=lambda x: x[0])
         numbers = [num for _, _, num in items if num is not None]
@@ -772,7 +753,6 @@ def find_mid_sequence_breaks(df):
             continue
         min_e = min(numbers)
         max_e = max(numbers)
-
         for idx, item_text, num in items:
             if num is None:
                 pos = [i for i, (_, _, n) in enumerate(items) if n is not None]
@@ -783,10 +763,9 @@ def find_mid_sequence_breaks(df):
                 current_pos = items.index((idx, item_text, num))
                 if first < current_pos < last:
                     suspicious_indexes.append(idx)
-
     return suspicious_indexes
 
-# ----------- Validsi -------------------------------------------------------------------------------
+# TRANSFORM TO FINAL FORMAT ===========================================================================================//
 def transform_to_final_format(df):
     df.columns = [col.strip().replace('\n', ' ').title() for col in df.columns]
     if "Control Method" not in df.columns:
@@ -796,23 +775,12 @@ def transform_to_final_format(df):
     def bersihkan_control_method_bocor(text):
         if not isinstance(text, str):
             return text
-        # Hapus mulai dari OK sampai NG atau N
         cleaned = re.sub(r"\bOK\b.*?\bN[G]?\b", "", text, flags=re.IGNORECASE).strip()
         return cleaned
 
     df["Control Method"] = df["Control Method"].fillna(method="ffill")
     df["Control Method"] = df["Control Method"].apply(bersihkan_control_method_bocor)
     df = df.replace(to_replace=["", "nan", "None"], value=np.nan)
-
-    dengan_ukur_keywords = [
-        "caliper", "hg", "depth cal", "pitch dial", "rough. t", "hitung", "depth clp", "height g", "dial g",
-        "dial clp.", "crm", "id micro", "rough t", "blog g + dept c.", "depth c."
-    ]
-    tanpa_ukur_keywords = [
-        "visual", "pg", "snap g.", "visual & punch", "visual + kikir", "visual & kikir",
-        "machining test", "visual ( reff. master rough.)", "insp. jig", "finishing test"
-    ]
-    dengan_cmm_keywords = ["cmm"]
 
     final_rows = []
     current_section = ""
@@ -822,7 +790,7 @@ def transform_to_final_format(df):
     for idx, row in df.iterrows():
         if is_section_row(row):
             maybe_section = extract_section_title(row)
-            print(f"🔍 [Row {idx}] Detected section → {maybe_section}")
+            # print(f"🔍 [Row {idx}] Detected section → {maybe_section}")
             if maybe_section.strip() and len(maybe_section.strip()) > 5:
                 current_section = maybe_section.strip()
             continue
@@ -869,10 +837,7 @@ def transform_to_final_format(df):
         elif any(keyword in control_method_lower for keyword in dengan_cmm_keywords):
             jenis_point = "Dengan CMM"
         else:
-            jenis_point = "Lainnya"
-
-        # qtime_checked = st.session_state.get(f"qtime_{idx}", False)
-        # check100_checked = st.session_state.get(f"check100_{idx}", False)
+            jenis_point = "Tanpa Ukur"
 
         jenis_pengecekan = [
             v.strip()
@@ -881,20 +846,6 @@ def transform_to_final_format(df):
             if v.strip() and v.strip() != "-"
         ]
 
-        # Deteksi huruf kapital spesial di item_check (Qtime & 100%)
-        if jenis_point == "Tanpa Ukur":
-            tokens = item_check.split()
-            if "T" in tokens:
-                jenis_pengecekan.append("Q-time")
-                tokens.remove("T")
-            if "C" in tokens:
-                jenis_pengecekan.append("100%")
-                tokens.remove("C")
-            item_check = " ".join(tokens)
-        # if qtime_checked:
-        #     jenis_pengecekan.append("Q-time")
-        # if check100_checked:
-        #     jenis_pengecekan.append("100%")
         jenis_pengecekan = list(dict.fromkeys(jenis_pengecekan))
 
         final_row = {
@@ -906,8 +857,6 @@ def transform_to_final_format(df):
             "control_method": control_method or last_control_method,
             "standard": str(row.get("Standard", "")).strip(),
             "jenis_pengecekan": jenis_pengecekan
-            # "Q-time": qtime_checked,
-            # "check_100": check100_checked,
         }
         final_rows.append(final_row)
     df_result = pd.DataFrame(final_rows)
@@ -944,7 +893,7 @@ def transform_to_final_format(df):
         return current
 
     df_result["jenis_pengecekan"] = df_result.apply(update_jenis_pengecekan, axis=1)
-
+    df_result["jenis_pengecekan"] = df_result.apply(apply_symbol_indicators_to_jenis, axis=1)
     def convert_roman_section_to_number(text):
         if pd.isna(text):
             return text
@@ -994,7 +943,7 @@ def transform_to_final_format(df):
         std = str(row["standard"]).strip()
         catatan = str(row["catatan"]).strip()
 
-        # ❌ Jangan eksekusi untuk thread metric
+        # \Jangan eksekusi untuk thread metric
         if re.search(r'\bM\d+\s*[xX×]\s*\d+(\.\d+)?', std):
             return row
 
@@ -1041,17 +990,6 @@ def transform_to_final_format(df):
                 jenis_pengecekan = [v.strip() for v in jenis_pengecekan.split(",") if v.strip()]
             elif not isinstance(jenis_pengecekan, list):
                 jenis_pengecekan = [str(jenis_pengecekan).strip()]
-
-            is_qtime_missing = "Q-time" not in jenis_pengecekan
-            is_check100_missing = "100%" not in jenis_pengecekan
-
-            tokens = item_check.strip().split()
-            if "T" in tokens and is_qtime_missing:
-                suspicious_indexes.append(idx)
-                continue
-            if "C" in tokens and is_check100_missing:
-                suspicious_indexes.append(idx)
-                continue
 
             is_suspect = (
                 not any(char in item_check for char in "()") and
