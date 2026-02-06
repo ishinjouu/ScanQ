@@ -36,6 +36,13 @@ def extract_table_from_pdf(file):
         for page_num, page in enumerate(pdf.pages):
             tables = page.extract_tables()
             page_tables = []
+            # Log ALL RAW SCAN --------------------------------------------------------------//
+            # st.write(f"📄 Halaman {page_num + 1}")
+            # for table_idx, table in enumerate(tables):
+            #     st.write(f"  ➤ Tabel {table_idx + 1} - Jumlah baris: {len(table)}")
+            #     for i, row in enumerate(table):
+            #         st.write(f"    Row {i}: {row}")
+            # Log ALL RAW SCAN --------------------------------------------------------------//
             for table_idx, table in enumerate(tables):
                 if not table or len(table) < 2:
                     continue
@@ -94,6 +101,40 @@ def extract_table_from_pdf(file):
 # ===================================================================================================
 # Cleaned Inspection Standard & Clean Footer
 # ===================================================================================================
+def parse_header_blocks(columns):
+    blocks = []
+    current_block = None
+    for idx, col in enumerate(columns):
+        lc = col.lower().strip()
+        # kolom noise -> reset block
+        if lc in ["", "none none none", "nan nan nan"]:
+            blocks.append({
+                "index": idx,
+                "name": col,
+                "block": None,
+                "is_method": False,
+                "is_frek": False
+            })
+            current_block = None
+            continue
+        if "verifikasi" in lc and "job" in lc and "method" in lc:
+            current_block = "vjs"
+        elif "insp" in lc and "normal" in lc and "method" in lc:
+            current_block = "insp"
+        elif "q time" in lc and "method" in lc:
+            current_block = "qt"
+        elif ("100%" in lc or "operator" in lc) and "method" in lc:
+            current_block = "op"
+        blocks.append({
+            "index": idx,
+            "name": col,
+            "block": current_block,
+            "is_method": "method" in lc,
+            "is_frek": "frek" in lc
+        })
+
+    return blocks
+
 def bersihkan_dataframe(df):
     if df.empty:
         return df
@@ -149,22 +190,20 @@ def bersihkan_dataframe(df):
         # ----------------------------------------------------------------
         col_insp_method = None
         col_insp_frek = None
+        insp_method_idx = None
+        insp_frek_idx = None
+        cols = list(data_df.columns)
+        for i, col in enumerate(cols):
+            lc = col.lower().replace(".", " ")
 
-        for i, c in enumerate(data_df.columns):
-            lc = c.lower().replace(".", " ")
             if "insp" in lc and "normal" in lc and "method" in lc:
-                col_insp_method = c
-                # ambil kolom kanan sebagai frek, pastikan bukan Verifikasi Job Setup
-                if i + 1 < len(data_df.columns):
-                    next_col = data_df.columns[i + 1]
-                    if "verifikasi" not in next_col.lower():  
-                        col_insp_frek = next_col
-                break
+                insp_method_idx = i
+                col_insp_method = col
 
-        # fallback jika header Method+Frek digabung dalam satu kolom
-        if col_insp_method and not col_insp_frek:
-            if re.search(r"method.*frek|frek.*method", col_insp_method.lower()):
-                col_insp_frek = col_insp_method
+                if i + 1 < len(cols) and "frek" in cols[i + 1].lower():
+                    insp_frek_idx = i + 1
+                    col_insp_frek = cols[i + 1]
+                break
 
         # mapping
         cols_map = {
@@ -173,15 +212,23 @@ def bersihkan_dataframe(df):
             "Item": col_item,
             "Standard": col_std,
             "Verifikasi Job Set Up (Method)": col_vjs,
-            "Insp. Normal (Method)": col_insp_method,
-            "Insp. Normal (Frek)": col_insp_frek,
+            "Insp. Normal (Method)": insp_method_idx,
+            "Insp. Normal (Frek)": insp_frek_idx,
             "Q Time (Method)": col_qt,
             "100% (Method)": col_op,
         }
-
+        def get_col_by_index(df, idx):
+            if idx is None:
+                return None
+            return df.iloc[:, idx]
         clean_df = pd.DataFrame()
         for nice_name, raw_col in cols_map.items():
-            if raw_col:
+            # CASE 1: pakai index (Insp Normal)
+            if isinstance(raw_col, int):
+                clean_df[nice_name] = get_col_by_index(data_df, raw_col)
+                continue
+            # CASE 2: pakai nama kolom (string)
+            if isinstance(raw_col, str):
                 matched = [
                     c for c in data_df.columns
                     if c == raw_col or c.startswith(raw_col + "_")
@@ -193,13 +240,34 @@ def bersihkan_dataframe(df):
                     clean_df[nice_name] = col_data
                 else:
                     clean_df[nice_name] = np.nan
-            else:
-                clean_df[nice_name] = ""
+                continue
+            # CASE 3: None / kosong
+            clean_df[nice_name] = ""
 
         # clean null row
+        clean_df = clean_df.replace(r'^\s*$', np.nan, regex=True)
         clean_df = clean_df.dropna(how="all").reset_index(drop=True)
         for c in ["Section","No", "Item", "Standard"]:
             clean_df[c] = clean_df[c].fillna(method="ffill")
+
+        # --- SINKRONIZE INSP NORMAL METHOD & FREK ---
+        method_col = "Insp. Normal (Method)"
+        frek_col   = "Insp. Normal (Frek)"
+        if method_col in clean_df.columns and frek_col in clean_df.columns:
+            last_frek = None
+            for i in range(len(clean_df)):
+                method_val = clean_df.at[i, method_col]
+                frek_val   = clean_df.at[i, frek_col]
+                # kalau method kosong, STOP isi frek
+                if pd.isna(method_val) or str(method_val).strip() == "":
+                    last_frek = None
+                    continue
+                # kalau frek ada, simpan
+                if not pd.isna(frek_val) and str(frek_val).strip() != "":
+                    last_frek = frek_val
+                else:
+                    # method ada, frek kosong → isi dari atas
+                    clean_df.at[i, frek_col] = last_frek
 
         clean_df = merge_point_item(clean_df)
         clean_df = tambah_section_nomor(clean_df)
@@ -220,7 +288,8 @@ def bersihkan_dataframe(df):
                 clean_df[cc] = clean_df[cc].replace(["", "None", None, np.nan], np.nan)
                 clean_df[cc] = clean_df[cc].fillna(method="ffill")
         result_tables.append(clean_df)
-
+        print(list(data_df.columns))
+        print(col_insp_method, col_insp_frek)
     return pd.concat(result_tables, ignore_index=True) if result_tables else df
 
 # Section Number --------------------------------------------------------------------------------------------------//
@@ -293,7 +362,7 @@ def extract_single_caps_as_note(df, target_caps=None, source_cols=None, remark_c
         source_cols = ["No", "Item", "Standard"]
     standalone = r'(?<![A-Za-z0-9])([FQ])(?![A-Za-z0-9])'
     numeric_caps = r'(\d+)([FQ])'
-
+    num_cap_suffix = r'(\d+)\s*([FQ])\s*([a-zA-Z])'
     def process_row(row):
         # skip if "to F" or "to Q"
         text_all = " ".join(str(row.get(c, "") or "") for c in source_cols).lower()
@@ -311,15 +380,18 @@ def extract_single_caps_as_note(df, target_caps=None, source_cols=None, remark_c
                 tag = f"[{cap}]"
                 if tag not in remark:
                     remark = (remark + " " + tag).strip()
-            found2 = re.findall(numeric_caps, text)
-            for num, cap in found2:
+            # CASE: 2 Fa / 2Fb / 2 F a
+            found3 = re.findall(num_cap_suffix, text)
+            for num, cap, suf in found3:
                 tag = f"[{cap}]"
                 if tag not in remark:
                     remark = (remark + " " + tag).strip()
+                if col == "No":
+                    text = f"{num}{suf.lower()}"
             cleaned = re.sub(standalone, " ", text)
             cleaned = re.sub(r"\s+", " ", cleaned).strip()
             row[col] = cleaned
-            row[remark_col] = remark  
+            row[remark_col] = remark
         return row
     return df.apply(process_row, axis=1)
 
@@ -327,7 +399,6 @@ def extract_single_caps_as_note(df, target_caps=None, source_cols=None, remark_c
 def merge_point_item(df):
     if df.empty:
         return df
-
     col_no = None
     col_item = None
     for c in df.columns:
@@ -338,7 +409,6 @@ def merge_point_item(df):
             col_item = c
     if not col_no or not col_item:
         return df  
-
     new_no = []
     new_item = []
     for no, item in zip(df[col_no], df[col_item]):
@@ -354,7 +424,6 @@ def merge_point_item(df):
         else:
             new_no.append(no_str)
             new_item.append(item_str)
-
     df[col_no] = new_no
     df[col_item] = new_item
     return df
@@ -381,16 +450,46 @@ def hapus_footer(df):
 # ===================================================================================================
 # Transform to Final Format
 # ===================================================================================================
+FREK_TO_JENIS_INSP = {
+    "Patrol 1x/Shift": [
+        "1x/shift", "shift/1x", "1 shift", "x1/shift", "1x shift", "x1 / shift", "shift x1",
+        "tfihs / x1", "x1 / tfihs", "tfihs/1x", "1x / tfihs", "tfihs x1",
+        "tfihs / x1 tfihs / x1", "tfihs / x1 tfihs / x1 tfihs / x1", "1x / shift"
+    ],
+    "Patrol 1x/Day": [
+        "1x/day", "day/1x", "1 day", "1x per day", "per day", "yad/x1", "x1/yad", "1x   day", "yad scp 1",
+        "yad   scp 1",  "1x / day",
+    ]
+}
 METHOD_TO_JENIS = {
-    "Verifikasi Job Set Up (Method)": "Q-Time",
-    "Insp. Normal (Method)": "Q-Time",
+    "Verifikasi Job Set Up (Method)": "Job Setup",
     "Q Time (Method)": "Q-Time",
     "100% (Method)": "Check 100%",
 }
 
+def normalize_frek(val):
+    if val is None:
+        return ""
+    s = str(val).lower()
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+def detect_insp_jenis_from_frek(frek):
+    if frek is None or pd.isna(frek):
+        return None
+    # hapus spasi, dash, underscore, lowercase
+    f = str(frek).lower()
+    f = re.sub(r"[\s\-_]", "", f)
+    for jenis, variants in FREK_TO_JENIS_INSP.items():
+        for v in variants:
+            v_norm = re.sub(r"[\s\-_]", "", v.lower())
+            if v_norm and v_norm in f:
+                return jenis
+    return None
+
 def handle_control_method(row): # Control method & Jenis Pengecekan -------------------------------//
     main_methods = []
     hundred_methods = []
+    job_setup_methods = []
     for col, jenis in METHOD_TO_JENIS.items():
         if col not in row.index:
             continue
@@ -399,6 +498,8 @@ def handle_control_method(row): # Control method & Jenis Pengecekan ------------
             continue
         if jenis == "Check 100%":
             hundred_methods.append(val)
+        elif jenis == "Job Setup":
+            job_setup_methods.append(val)
         else:
             main_methods.append(val)
     hasil = []
@@ -438,14 +539,50 @@ def handle_control_method(row): # Control method & Jenis Pengecekan ------------
                 main_row["jenis_pengecekan"] = ["Q-Time"]
                 hasil.append(main_row)
 
-    # Case C: 100% tersisa````````````````````````````````````````````````````````````````````````````````````````````````
+    # Case C: 100% tersisa
     if normalized_100:
         for method in normalized_100.values():
             new_row = row.copy()
             new_row["control_method"] = method
             new_row["jenis_pengecekan"] = ["Check 100%"]
             hasil.append(new_row)
+            
+    # Case INSP: Insp. Normal berdasarkan frek
+    insp_method = row.get("Insp. Normal (Method)")
+    insp_frek = row.get("Insp. Normal (Frek)")
+    if pd.notna(insp_method) and str(insp_method).strip() != "":
+        m_str = str(insp_method).strip()
+        jenis_insp = detect_insp_jenis_from_frek(insp_frek) or "Patrol"
+        found_insp = False
+        for h in hasil:
+            if h["control_method"] == m_str:
+                if jenis_insp not in h["jenis_pengecekan"]:
+                    h["jenis_pengecekan"].append(jenis_insp)
+                found_insp = True
+                break
+        if not found_insp:
+            insp_row = row.copy()
+            insp_row["control_method"] = m_str
+            insp_row["jenis_pengecekan"] = [jenis_insp]
+            hasil.append(insp_row)
 
+    # Case Job Setup
+    if job_setup_methods:
+        norm_js = normalize_list(job_setup_methods)
+        for method in norm_js.values():
+            # cek apakah ada row dengan same control_method
+            found = False
+            for h in hasil:
+                if h["control_method"] == method or h.get("_is_insp"):
+                    if "Job Setup" not in h["jenis_pengecekan"]:
+                        h["jenis_pengecekan"].append("Job Setup")
+                    found = True
+                    break
+            if not found:
+                js_row = row.copy()
+                js_row["control_method"] = method
+                js_row["jenis_pengecekan"] = ["Job Setup"]
+                hasil.append(js_row)
     return hasil
 
 # Validasi For Final Format ---------------------------------------------------------------------------//
@@ -494,6 +631,14 @@ def transform_to_final_format(df):
             final[col] = df[col]
         else:
             final[col] = ""
+            
+    # --- TAMBAHAN: Copy Kolom Inspeksi ke Final ---
+    insp_cols = ["Insp. Normal (Method)", "Insp. Normal (Frek)"]
+    for col in insp_cols:
+        if col in df.columns:
+            final[col] = df[col]
+        else:
+            final[col] = ""
 
     # --- FIX SECTION FILL "-" ---
     final["section"] = final["section"].replace([None, np.nan], "")
@@ -515,6 +660,9 @@ def transform_to_final_format(df):
     for _, r in final.iterrows():
         expanded.extend(handle_control_method(r))  
     final = pd.DataFrame(expanded)
+
+    cols_to_remove = ["Insp. Normal (Method)", "Insp. Normal (Frek)", "_is_insp"]
+    final.drop(columns=[c for c in cols_to_remove if c in final.columns], inplace=True)
 
     # dengan ukur, tanpa ukur, dengan cmm
     def tentukan_jenis_point(method, raw_methods): 

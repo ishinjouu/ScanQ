@@ -22,7 +22,8 @@ def submit_data():
     file = request.files['file']
 
     try:
-        extract_table_from_pdf, bersihkan_dataframe, transform_to_final_format = load_processor_module(file.filename)
+        # extract_table_from_pdf, bersihkan_dataframe, transform_to_final_format = load_processor_module(file.filename)
+        _, extract_table_from_pdf, bersihkan_dataframe, transform_to_final_format = load_processor_module(file.filename)
 
         df_raw = extract_table_from_pdf(file)
         df_clean = bersihkan_dataframe(df_raw)
