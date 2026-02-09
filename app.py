@@ -32,41 +32,6 @@ def load_processor_module(filename: str):
     )
 
 # ---------------------------------------
-# MAPPING JENIS PENGECEKAN BY ID
-# ---------------------------------------
-JENIS_PENGECEKAN_ID = {
-    "ISIR": 1,
-    "IRD": 2,
-    "TRIAL": 3,
-    "PDC": 4,
-    "INCOMING": 5,
-    "Q-Time": 6,
-    "Patrol 1x/Day": 7,
-    "Patrol 1x/Shift": 8,
-    "Job Setup": 9,
-    "Check 100%": 11,
-}
-def convert_jenis_pengecekan_id(data):
-    if "jenis_pengecekan" not in data:
-        return data
-    val = data.get("jenis_pengecekan")
-    if isinstance(val, str):
-        jenis = [j.strip() for j in val.split(',')]
-    elif isinstance(val, list):
-        jenis = val
-    else:
-        jenis = []
-
-    data["jenis_pengecekan_id"] = [
-        JENIS_PENGECEKAN_ID[j]
-        for j in jenis
-        if j in JENIS_PENGECEKAN_ID
-    ]
-
-    data.pop("jenis_pengecekan", None)
-    return data
-
-# ---------------------------------------
 # HASH & UI for streamlit
 # ---------------------------------------
 def get_file_hash(file):
@@ -134,17 +99,12 @@ def proses_file():
     file = request.files['file']
 
     # pilih modul berdasarkan nama file
-    # extract_table_from_pdf, bersihkan_dataframe, transform_to_final_format = load_processor_module(file.filename)
-    _, extract_table_from_pdf, bersihkan_dataframe, transform_to_final_format = load_processor_module(file.filename)
+    extract_table_from_pdf, bersihkan_dataframe, transform_to_final_format = load_processor_module(file.filename)
 
     try:
         df_raw = extract_table_from_pdf(file)
         df_clean = bersihkan_dataframe(df_raw)
         df_final = transform_to_final_format(df_clean)
-        # return jsonify(df_final.to_dict(orient="records"))
-        records = df_final.to_dict(orient="records")
-        records = [convert_jenis_pengecekan_id(r) for r in records]
-        # print(records[0])  # debug
-        return jsonify(records)
+        return jsonify(df_final.to_dict(orient="records"))
     except Exception as e:
         return jsonify({"error": str(e)}), 500

@@ -310,21 +310,21 @@ def parse_standard_value(row):
     # 21. Rz 2 ~ Rz 12.5 
     match21 = re.match(r'^\s*([A-Za-z]{1,3})\s*(\d+(?:\.\d+)?)\s*~\s*\1\s*(\d+(?:\.\d+)?).*$', standard, flags=re.IGNORECASE)
     if match21:
-        lower = float(match21.group(1))
-        upper = float(match21.group(2))
-        return pd.Series([0.0, lower, upper], index=["std_value", "std_min", "std_max"])
+        std_value = float(match21.group(2))
+        std_max   = float(match21.group(3))
+        return pd.Series([std_value, 0.0, std_max], index=["std_value", "std_min", "std_max"])
     # -- C0.5 ~ 1.0  
     match21b = re.match(r'^\s*([A-Za-z])\s*(\d+(?:\.\d+)?)\s*~\s*(\d+(?:\.\d+)?).*$', standard, flags=re.IGNORECASE)
     if match21b:
-        lower = float(match21b.group(1))
-        upper = float(match21b.group(2))
-        return pd.Series([0.0, lower, upper], index=["std_value", "std_min", "std_max"])
+        std_value = float(match21b.group(2))
+        std_max   = float(match21b.group(3))
+        return pd.Series([std_value, 0.0, std_max], index=["std_value", "std_min", "std_max"])
     # -- 1.5a ~ 2.5
     match21c = re.match(r'^\s*(\d+(?:\.\d+)?)\s*[A-Za-z]\s*~\s*(\d+(?:\.\d+)?).*$', standard, flags=re.IGNORECASE)
     if match21c:
-        lower = float(match21c.group(1))
-        upper = float(match21c.group(2))
-        return pd.Series([0.0, lower, upper], index=["std_value", "std_min", "std_max"])
+        std_value = float(match21c.group(1))
+        std_max   = float(match21c.group(2))
+        return pd.Series([std_value, 0.0, std_max], index=["std_value", "std_min", "std_max"])
         
     # 22. 3.2 a (max)
     match22 = re.match(r'^\s*(\d+(?:\.\d+)?)\s*[A-Za-z]\s*$', standard)

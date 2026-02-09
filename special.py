@@ -523,6 +523,35 @@ def find_exact_duplicates(df): # for duplicated data
     return duplicate_indexes
 
 #  Main Fitur ----------------------------------------------------------------------------------------------------//
+def norm_jenis(s):
+    if s is None:
+        return ""
+    s = str(s).strip().lower()
+    s = re.sub(r"\s+", " ", s)
+    return s
+JENIS_PENGECEKAN_ID = {
+    "isir": 1,
+    "ird": 2,
+    "trial": 3,
+    "pdc": 4,
+    "incoming": 5,
+    "q-time": 6,
+    "patrol 1x/day": 7,
+    "patrol 1x/shift": 8,
+    "job setup": 9,
+    "check 100%": 11,
+}
+def map_jenis_pengecekan(val):
+    if not isinstance(val, list):
+        return []
+
+    result = []
+    for j in val:
+        key = norm_jenis(j)
+        if key in JENIS_PENGECEKAN_ID:
+            result.append(JENIS_PENGECEKAN_ID[key])
+    return result
+
 def transform_to_final_format(df):
     df.columns = [col.strip().replace('\n', ' ').title() for col in df.columns]
     # Jenis Point Check 
@@ -624,7 +653,8 @@ def transform_to_final_format(df):
     final = final.apply(parse_std_for_row, axis=1)
     final["catatan"] = final["catatan"].apply(lambda x: "-" if pd.isna(x) or str(x).strip() == "" else x)
     final = append_cmm_summary_row(final)
-
+    final["jenis_pengecekan_id"] = final["jenis_pengecekan"].apply(map_jenis_pengecekan)
+    final.drop(columns=["jenis_pengecekan"], inplace=True)
     # Validasi ( Footer bocor )--------------------------------------------------------//
     def is_valid_point_check(x):
         if x is None or str(x).strip() == "":
