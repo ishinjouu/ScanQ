@@ -237,7 +237,7 @@ def hapus_footer(df):
     cleaned_pages = []
     unique_pages = df["page_number"].unique()
     for page in unique_pages:
-        page_df = df[df["page_number"] == page].copy() 
+        page_df = df[df["page_number"] == page].copy()
         footer_start_idx = None
         for idx in page_df.index:
             row = page_df.loc[idx]
@@ -454,7 +454,7 @@ def gabungkan_kolom_item(df, kolom_Item='Item'):
     return df
 
 def fill_item(df, kolom_item='Item', kolom_standard='Standard'):
-    df = df.reset_index(drop=True)  
+    df = df.reset_index(drop=True)
     def is_section(text):
         if isinstance(text, str):
             return bool(re.match(r'^[IVXLCDM]+\.', text.strip()))  # regex untuk format Romawi titik (mis. "I.", "II.", dll)
@@ -480,7 +480,7 @@ def normalisasi_patrol(patrol_input):
         ],
         "Patrol 1x/Day": [
             "1x/day", "day/1x", "1 day", "1x per day", "per day", "yad/x1", "x1/yad", "1x   day", "yad scp 1",
-            "yad   scp 1", 
+            "yad   scp 1",
         ]
     }
     hasil = set()
@@ -508,7 +508,7 @@ def bersihkan_dataframe(df):
             return teks
         teks = teks.lower()
         teks = re.sub(r"\s+", " ", teks).strip()
-        teks = teks.replace("/", " ") 
+        teks = teks.replace("/", " ")
         shift_synonyms = ["shift", "tfihs"]
         day_synonyms = ["day", "yad"]
         found_x = re.search(r"(?:\d+x|x\d+)", teks)
@@ -547,7 +547,7 @@ def bersihkan_dataframe(df):
         if col in df.columns:
             df.drop(columns=[col], inplace=True)
     # cavity_columns = [col for col in df.columns if col.lower().startswith("cavity sample")]
-    cavity_columns = [col for col in df.columns if any(key in col.lower() for key in ("cavity", "sample"))]  
+    cavity_columns = [col for col in df.columns if any(key in col.lower() for key in ("cavity", "sample"))]
     if cavity_columns:
         df_cols = df.columns.tolist()
         first_cavity = cavity_columns[0]
@@ -576,7 +576,7 @@ def bersihkan_dataframe(df):
                 if valid_patterns.match(value_clean):
                     return value
                 else:
-                    return value  
+                    return value
             return value
         df["Standard"] = df["Standard"].apply(validate_standard)
     df = df.applymap(lambda x: '' if str(x).strip().lower() == 'none' else maybe_flip_text(x))
@@ -639,7 +639,7 @@ def merge_point_item(df):
         item_str = str(item).strip()
         if re.match(r'^[a-zA-Z]\.', item_str):
             letter = item_str[0]
-            remaining_item = re.sub(r'^[a-zA-Z]\.\s*', '', item_str, count=1)  
+            remaining_item = re.sub(r'^[a-zA-Z]\.\s*', '', item_str, count=1)
             new_point_check.append(f"{point}{letter}")
             new_item_check.append(remaining_item)
         else:
@@ -771,7 +771,7 @@ def transform_to_final_format(df):
     if "Control Method" not in df.columns:
         df["Control Method"] = np.nan
     df = df.replace(to_replace=["", "nan", "None"], value=np.nan)
-   
+
     def bersihkan_control_method_bocor(text):
         if not isinstance(text, str):
             return text
@@ -860,7 +860,7 @@ def transform_to_final_format(df):
         }
         final_rows.append(final_row)
     df_result = pd.DataFrame(final_rows)
-   
+
     def apply_note_transformations(row):
         if row["jenis_point"] in ["Dengan Ukur", "Dengan CMM"]:
             row = copy_special_measurements_to_note(row)
@@ -928,7 +928,7 @@ def transform_to_final_format(df):
         for col in cols_to_fill:
             if col in df.columns:
                 df[col] = df[col].replace(["", "nan", "None"], np.nan).fillna("-")
-       
+
         if "jenis_pengecekan" in df.columns:
             df["jenis_pengecekan"] = df["jenis_pengecekan"].apply(
                 lambda val: [v for v in val if v != "-"] if isinstance(val, list) else ["-"]
@@ -956,7 +956,7 @@ def transform_to_final_format(df):
         row["standard"] = std
         row["catatan"] = catatan
         return row
-   
+
     # --------------- Temukan duplikat sama persis -----------------
     def find_exact_duplicates(df):
         duplicate_indexes = []
@@ -1004,7 +1004,7 @@ def transform_to_final_format(df):
             if is_suspect:
                 suspicious_indexes.append(idx)
         return suspicious_indexes
-   
+
     # ---------------------- validasi ----------------------------------------------------------------
     def find_invalid_format_rows(df):
         invalid_indexes = []
@@ -1025,7 +1025,7 @@ def transform_to_final_format(df):
                 invalid_indexes.append(idx)
 
         return invalid_indexes
-   
+
     def find_suspicious_material_item(df):
         suspicious_indexes = []
         for idx, row in df.iterrows():
@@ -1050,7 +1050,7 @@ def transform_to_final_format(df):
 
     df_result["jenis_point"] = df_result["jenis_point"].replace("Lainnya", np.nan).fillna(method="ffill")
     df_result["control_method"] = df_result["control_method"].replace(["", "nan", "None"], np.nan).fillna(method="ffill")
-   
+
     df_result["standard_asli"] = df_result["standard"]
     mask_diukur = df_result["jenis_point"].isin(["Dengan Ukur", "Dengan CMM"])
     mask_tanpa_ukur = df_result["jenis_point"] == "Tanpa Ukur"
@@ -1061,7 +1061,7 @@ def transform_to_final_format(df):
     df_result = clean_empty_rows(df_result)
     df_result = merge_point_item(df_result)
     df_result = final_cleanup(df_result)
- 
+
     # 🚨 VALIDASI
     df_result["status"] = "valid"
     df_result.loc[find_exact_duplicates(df_result), "status"] = "duplikat"
@@ -1074,5 +1074,5 @@ def transform_to_final_format(df):
     df_result = df_result[df_result["status"] == "valid"].reset_index(drop=True)
 
     df_result = append_cmm_summary_row(df_result)
-    
+
     return df_result

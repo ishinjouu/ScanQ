@@ -62,7 +62,7 @@ def extract_table_from_pdf(file):
                         padded_row = row + [""] * (len(header) - len(row))
                         target_idx = 2
                         if not padded_row[target_idx] or str(padded_row[target_idx]).strip() == "":
-                            for val in padded_row[5:10]:  
+                            for val in padded_row[5:10]:
                                 val_clean = str(val).strip()
                                 if val_clean.isdigit():
                                     padded_row[target_idx] = val_clean
@@ -270,6 +270,8 @@ def bersihkan_dataframe(df):
                     clean_df.at[i, frek_col] = last_frek
 
         clean_df = merge_point_item(clean_df)
+        clean_df = salvage_orphan_item_labels(clean_df, data_df)
+        clean_df = extract_label_from_standard(clean_df)
         clean_df = tambah_section_nomor(clean_df)
         clean_df = clean_df.reset_index(drop=True)
         last_section = "-"
@@ -280,7 +282,7 @@ def bersihkan_dataframe(df):
             clean_df.loc[r, "Section"] = last_section
         clean_df = isi_label_abjad_di_antara(clean_df, kolom='Item', No='No')
         clean_df = extract_single_caps_as_note(clean_df, ...)
-        
+
         # Jobsetup fallback -- fill up
         control_cols = ["Verifikasi Job Set Up (Method)"]
         for cc in control_cols:
@@ -292,13 +294,14 @@ def bersihkan_dataframe(df):
         print(col_insp_method, col_insp_frek)
     return pd.concat(result_tables, ignore_index=True) if result_tables else df
 
+
 # Section Number --------------------------------------------------------------------------------------------------//
 def tambah_section_nomor(df):
     df = df.copy()
     SECTION_REGEX = r'^\s*(I{1,3}|IV|V|VI{0,3}|VII{0,3}|VIII|IX|X)\s*[\.\-–]\s*(.+)$'
     current_section = None
     current_sharp = None
-    section_from_sharp = False  
+    section_from_sharp = False
     new_rows = []
     for i in range(len(df)):
         row = df.iloc[i].copy()
@@ -310,7 +313,7 @@ def tambah_section_nomor(df):
             title = match.group(2).strip()
             current_section = f"{roman_to_int(roman)}. {title}"
             current_sharp = None
-            section_from_sharp = False 
+            section_from_sharp = False
             row["Section"] = current_section
             new_rows.append(row)
             continue
@@ -320,7 +323,7 @@ def tambah_section_nomor(df):
             if current_section is None:
                 current_section = sharp_clean
                 current_sharp = None
-                section_from_sharp = True 
+                section_from_sharp = True
                 continue
             # CASE B — ada SECTION asli sebelumnya (roman numeral)
             if not section_from_sharp:
@@ -352,6 +355,64 @@ def roman_to_int(roman):
         result += val if val >= prev else -val
         prev = val
     return result
+
+# Move like M4 - M15 to Item from Standard, anc clean standard ------------------------------------------//
+def extract_label_from_standard(clean_df):
+    M_PATTERN = re.compile(r'^\s*(M\s*\d+)\s*', re.IGNORECASE)
+
+    for i in range(len(clean_df)):
+        std_val = str(clean_df.at[i, "Standard"]).strip()
+        if not std_val or std_val.lower() in ["none", "nan"]:
+            continue
+
+        match = M_PATTERN.match(std_val)
+        if not match:
+            continue
+
+        m_label = re.sub(r'\s+', '', match.group(1)).upper()  # "M 4" → "M4"
+        remaining = std_val[match.end():].strip()              # "Max 0.3"
+
+        # Append to Item
+        item_val = str(clean_df.at[i, "Item"]).strip()
+        if f"({m_label})" not in item_val:
+            clean_df.at[i, "Item"] = f"{item_val} ({m_label})"
+
+        # Replace Standard with remaining value
+        clean_df.at[i, "Standard"] = remaining if remaining else np.nan
+
+    return clean_df
+
+# adding (E2) - (1) - (B) into Item (x)-----------------------------------------------------------------------//
+def salvage_orphan_item_labels(clean_df, data_df):
+    SCAN_COLS = range(4, 7)  # columns 4, 5, 6 only
+
+    ORPHAN_PATTERNS = [
+        r'[A-Z]\d+',          # E2, A1
+        r'[A-Z]',             # A, B, C
+        r'\d+',               # 1, 2, 3
+    ]
+    combined_pattern = re.compile(
+        r'^(' + '|'.join(ORPHAN_PATTERNS) + r')$'
+    )
+
+    for i in range(len(clean_df)):
+        item_val = str(clean_df.at[i, "Item"]).strip()
+        raw_row = data_df.iloc[i].tolist()
+
+        for col_i in SCAN_COLS:
+            if col_i >= len(raw_row):
+                continue
+            val_str = str(raw_row[col_i]).strip() if raw_row[col_i] else ""
+            if not val_str or val_str.lower() in ["none", "nan"]:
+                continue
+            if combined_pattern.match(val_str):
+                if item_val in ["", "nan", "None"]:
+                    clean_df.at[i, "Item"] = val_str
+                elif f"({val_str})" not in item_val:
+                    clean_df.at[i, "Item"] = f"{item_val} ({val_str})"
+                break
+
+    return clean_df
 
 # [F], [Q] ----------------------------------------------------------------------------------------------------//
 # still error : 2f F --> remark not appear
@@ -408,7 +469,7 @@ def merge_point_item(df):
         elif "item" in lc:
             col_item = c
     if not col_no or not col_item:
-        return df  
+        return df
     new_no = []
     new_item = []
     for no, item in zip(df[col_no], df[col_item]):
@@ -479,6 +540,17 @@ def detect_insp_jenis_from_frek(frek):
     # hapus spasi, dash, underscore, lowercase
     f = str(frek).lower()
     f = re.sub(r"[\s\-_]", "", f)
+    # regex untuk semua angka
+    shift_pattern = r"\d+x?/?(shift|tfihs)|\d+(shift|tfihs)"
+    day_pattern = r"\d+x?/?day|\d+day"
+
+    if re.search(shift_pattern, f):
+        return "Patrol 1x/Shift"
+
+    if re.search(day_pattern, f):
+        return "Patrol 1x/Day"
+
+    # fallback ke variant lama
     for jenis, variants in FREK_TO_JENIS_INSP.items():
         for v in variants:
             v_norm = re.sub(r"[\s\-_]", "", v.lower())
@@ -546,7 +618,7 @@ def handle_control_method(row): # Control method & Jenis Pengecekan ------------
             new_row["control_method"] = method
             new_row["jenis_pengecekan"] = ["Check 100%"]
             hasil.append(new_row)
-            
+
     # Case INSP: Insp. Normal berdasarkan frek
     insp_method = row.get("Insp. Normal (Method)")
     insp_frek = row.get("Insp. Normal (Frek)")
@@ -589,7 +661,7 @@ def handle_control_method(row): # Control method & Jenis Pengecekan ------------
 def find_exact_duplicates(df): # for duplicated data
     duplicate_indexes = []
     seen_keys = set()
-    key_columns = ["section", "point_check", "jenis_point", "catatan","item_check", "control_method", "std_value", "std_min", "std_max"]
+    key_columns = ["section", "point_check", "jenis_point", "catatan","item_check", "control_method", "standard", "std_value", "std_min", "std_max"]
     for idx, row in df.iterrows():
         row_key = tuple(
             str(row.get(col, "")).strip().lower()
@@ -637,7 +709,7 @@ def map_jenis_pengecekan(val):
 
 def transform_to_final_format(df):
     df.columns = [col.strip().replace('\n', ' ').title() for col in df.columns]
-    # Jenis Point Check 
+    # Jenis Point Check
     if "Control Method" not in df.columns:
         df["Control Method"] = np.nan
 
@@ -660,7 +732,7 @@ def transform_to_final_format(df):
             final[col] = df[col]
         else:
             final[col] = ""
-            
+
     # --- TAMBAHAN: Copy Kolom Inspeksi ke Final ---
     insp_cols = ["Insp. Normal (Method)", "Insp. Normal (Frek)"]
     for col in insp_cols:
@@ -687,14 +759,14 @@ def transform_to_final_format(df):
 
     expanded = []
     for _, r in final.iterrows():
-        expanded.extend(handle_control_method(r))  
+        expanded.extend(handle_control_method(r))
     final = pd.DataFrame(expanded)
 
     cols_to_remove = ["Insp. Normal (Method)", "Insp. Normal (Frek)", "_is_insp"]
     final.drop(columns=[c for c in cols_to_remove if c in final.columns], inplace=True)
 
     # dengan ukur, tanpa ukur, dengan cmm
-    def tentukan_jenis_point(method, raw_methods): 
+    def tentukan_jenis_point(method, raw_methods):
         def norm(s):
             s = str(s or "")
             s = s.lower()
@@ -710,7 +782,7 @@ def transform_to_final_format(df):
             return "Dengan Ukur"
         if any(k in method_lower for k in _tanpa_ukur):
             return "Tanpa Ukur"
-        
+
         for col in METHOD_TO_JENIS.keys():
             val = norm(raw_methods.get(col, ""))
             if any(k in val for k in _dengan_cmm):
@@ -720,10 +792,10 @@ def transform_to_final_format(df):
             if any(k in val for k in _tanpa_ukur):
                 return "Tanpa Ukur"
         return "Tanpa Ukur"
-    
+
     final["jenis_point"] = final.apply(lambda r: tentukan_jenis_point(r["control_method"], r), axis=1)
 
-    # COPY STANDARD to CATATAN 
+    # COPY STANDARD to CATATAN
     final = final.apply(copy_special_measurements_to_note, axis=1)
     for col in METHOD_TO_JENIS.keys():
         if col in final.columns:
@@ -758,11 +830,18 @@ def transform_to_final_format(df):
             return True
         return False
     final = final[final["point_check"].apply(is_valid_point_check)].reset_index(drop=True)
+    # Validasi ( Material only item )--------------------------------------------------//
+    def is_suspicious_material(x):
+        item = str(x or "").strip().lower()
+        if "material" in item and len(item.split()) <= 3:
+            return True
+        return False
+    final = final[~final["item_check"].apply(is_suspicious_material)].reset_index(drop=True)
     # Validasi duplikat ===============
     final["status"] = "valid"
     duplicate_rows = find_exact_duplicates(final)
     final.loc[duplicate_rows, "status"] = "duplikat"
-    # Hapus otomatis 
+    # Hapus otomatis
     final = final[final["status"] == "valid"].reset_index(drop=True)
 
     return final
